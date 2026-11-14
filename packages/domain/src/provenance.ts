@@ -35,6 +35,10 @@ function unique(ids: readonly string[]) {
 /** Pure validation only: no URL fetch, collection, permission grant or publication. */
 export function validateProvenanceGraph(graph: ProvenanceGraph): void {
   validateDomainGraph(graph);
+  for (const c of graph.cases) {
+    keys(c,['mode','id','activity','revision','stage','parties']);
+    keys(c.activity,['id','domain','revision']);
+  }
   unique(graph.sources.map(s=>s.id));
   unique(graph.assertions.map(s=>s.id));
   for (const r of graph.activityRevisions) keys(r,['id','domain','revision','title']);
