@@ -57,7 +57,13 @@ try {
   const sessions=new Map();
   const user={id:'test-user',name:'TEST ONLY',email:'test@example.invalid',emailVerified:null};
   const token=randomBytes(32).toString('hex');
+  const unsupported=async()=>{throw new Error('Account creation/linking is outside this fixture');};
   const adapter={
+    createUser:unsupported, updateUser:unsupported, linkAccount:unsupported,
+    async getUser(id){return id===user.id?user:null;},
+    async getUserByEmail(email){return email===user.email?user:null;},
+    async getUserByAccount(){return null;},
+    async createSession(session){sessions.set(session.sessionToken,session);return session;},
     async getSessionAndUser(t) { const session=sessions.get(t); return session?{session,user}:null; },
     async updateSession(value) { const old=sessions.get(value.sessionToken); if(!old)return null;
       const next={...old,...value}; sessions.set(value.sessionToken,next); return next; },
