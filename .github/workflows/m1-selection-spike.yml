@@ -24,7 +24,6 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 12
     env:
       DATABASE_URL: postgresql://satoyama_spike:ci-only-spike@localhost:5432/satoyama_spike
-      M1_SPIKE_DIR: ${{ runner.temp }}/m1-selection-spike
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -34,6 +33,9 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Install isolated pinned candidates
-        run: npm install --prefix "$M1_SPIKE_DIR" --ignore-scripts --save-exact drizzle-orm@0.44.7 @auth/core@0.41.1 pg@8.16.3
+        run: |
+          export M1_SPIKE_DIR="$RUNNER_TEMP/m1-selection-spike"
+          echo "M1_SPIKE_DIR=$M1_SPIKE_DIR" >> "$GITHUB_ENV"
+          npm install --prefix "$M1_SPIKE_DIR" --ignore-scripts --save-exact drizzle-orm@0.44.7 @auth/core@0.41.1 pg@8.16.3
       - name: Run candidate experiments
         run: node scripts/m1-selection-spike.mjs
