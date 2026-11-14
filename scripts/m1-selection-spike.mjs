@@ -3,11 +3,11 @@ import { randomBytes } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
-import pg from 'pg';
 
 const root=process.env.M1_SPIKE_DIR;
 assert(root, 'M1_SPIKE_DIR required');
 const localRequire=createRequire(path.join(root,'package.json'));
+const pg=localRequire('pg');
 const {drizzle}=localRequire('drizzle-orm/node-postgres');
 const {sql}=localRequire('drizzle-orm');
 const {Auth}=await import(pathToFileURL(path.join(root,'node_modules/@auth/core/index.js')).href);
@@ -46,11 +46,11 @@ try {
     await assert.rejects(db.transaction(async tx=>{
       await tx.execute(sql.raw('SET LOCAL ROLE '+role));
       await tx.execute(sql.raw(op));
-    }),e=>e.code==='42501');
+    }),e=>(e.code??e.cause?.code)==='42501');
   }
   await db.execute(sql.raw('INSERT INTO '+schema+".actors VALUES ('public','public-catalog'),('sim','simulation')"));
-  await assert.rejects(db.execute(sql.raw('INSERT INTO '+schema+".parties VALUES ('case','public','public-catalog')")),e=>e.code==='23514');
-  await assert.rejects(db.execute(sql.raw('INSERT INTO '+schema+".parties VALUES ('case','missing','simulation')")),e=>e.code==='23503');
+  await assert.rejects(db.execute(sql.raw('INSERT INTO '+schema+".parties VALUES ('case','public','public-catalog')")),e=>(e.code??e.cause?.code)==='23514');
+  await assert.rejects(db.execute(sql.raw('INSERT INTO '+schema+".parties VALUES ('case','missing','simulation')")),e=>(e.code??e.cause?.code)==='23503');
   await db.execute(sql.raw('INSERT INTO '+schema+".parties VALUES ('case','sim','simulation')"));
   console.log('PASS Drizzle 0.44.7: geography/SRID/GiST, repeated DDL, transaction rollback, append-only role, simulation CHECK/FK');
 
