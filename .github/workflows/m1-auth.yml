@@ -1,0 +1,56 @@
+name: M1 Next Auth database acceptance
+on:
+  pull_request:
+    paths: ['experiments/m1-auth/**', '.github/workflows/m1-auth.yml']
+  push:
+    branches: ['codex/m1-auth']
+permissions:
+  contents: read
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgis/postgis:17-3.5
+        env:
+          POSTGRES_DB: m1_experiment
+          POSTGRES_USER: m1_experiment
+          POSTGRES_PASSWORD: ci-only
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U m1_experiment -d m1_experiment"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      DATABASE_URL: postgresql://m1_experiment:ci-only@localhost:5432/m1_experiment
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Isolated pinned candidates
+        run: |
+          mkdir -p "$RUNNER_TEMP/m1-auth"
+          cp -R experiments/m1-auth/. "$RUNNER_TEMP/m1-auth/"
+          cd "$RUNNER_TEMP/m1-auth"
+          npm init -y
+          npm install --ignore-scripts --save-exact next@16.4.6 react@19.3.1 react-dom@19.3.1 @auth/core@0.41.1 pg@8.16.3
+          npm ls --all > dependency-tree.txt
+          npm audit --json > audit.json || true
+      - name: Acceptance
+        env:
+          M1_SOURCE: ${{ github.workspace }}/experiments/m1-auth
+        run: |
+          cd "$RUNNER_TEMP/m1-auth"
+          node run.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: m1-auth-evidence
+          path: |
+            ${{ runner.temp }}/m1-auth/migrations
+            ${{ runner.temp }}/m1-auth/package-lock.json
+            ${{ runner.temp }}/m1-auth/dependency-tree.txt
+            ${{ runner.temp }}/m1-auth/audit.json
+            ${{ runner.temp }}/m1-auth/server.log

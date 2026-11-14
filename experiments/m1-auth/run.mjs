@@ -1,0 +1,75 @@
+import assert from 'node:assert/strict';
+import {spawn,spawnSync} from 'node:child_process';
+import {randomBytes} from 'node:crypto';
+import {open} from 'node:fs/promises';
+import {adapter,pool,init} from './adapter.mjs';
+assert.equal(new URL(process.env.DATABASE_URL).hostname,'localhost');
+await init();
+process.env.M1_AUTH_SPIKE='1';process.env.AUTH_SECRET=randomBytes(32).toString('hex');
+const user={id:'synthetic-1',name:'TEST ONLY',email:'one@example.invalid',emailVerified:null};
+const other={...user,id:'synthetic-2',email:'two@example.invalid'};
+const token=randomBytes(32).toString('hex'),expired=randomBytes(32).toString('hex');
+let server;
+const log=await open('server.log','a');
+const next=process.cwd()+'/node_modules/next/dist/bin/next';
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+async function stop(){if(!server)return;const s=server;server=null;s.kill('SIGTERM');await Promise.race([new Promise(r=>s.once('exit',r)),sleep(10000).then(()=>s.kill('SIGKILL'))]);}
+async function start(secure=false){
+ server=spawn(process.execPath,[next,'start','--hostname','127.0.0.1','--port','3107'],{env:{...process.env,SPIKE_SECURE:secure?'1':'0'},stdio:['ignore',log.fd,log.fd]});
+ for(let i=0;i<90;i++){if(server.exitCode!==null)throw Error('Next exited; see server.log');try{if((await fetch('http://127.0.0.1:3107')).ok)return;}catch{}await sleep(500);}
+ throw Error('Next startup timeout');
+}
+const cookie=(t,secure=false)=>(secure?'__Secure-authjs.session-token':'authjs.session-token')+'='+t;
+const get=(p,t,secure=false)=>fetch('http://127.0.0.1:3107'+p,{headers:t?{cookie:cookie(t,secure)}:{},redirect:'manual'});
+try{
+ await adapter.createUser(user);await adapter.createUser(other);
+ const account={provider:'synthetic-offline',providerAccountId:'opaque-1',userId:user.id,type:'oauth'};
+ await adapter.linkAccount(account);
+ assert.equal((await adapter.getUserByAccount(account)).id,user.id);
+ await assert.rejects(adapter.linkAccount({...account,userId:other.id}),e=>e.code==='23505');
+ await assert.rejects(adapter.linkAccount({...account,providerAccountId:'missing-user',userId:'missing'}),e=>e.code==='23503');
+ assert.equal((await adapter.getUserByAccount(account)).id,user.id);
+ assert.equal(await adapter.getUserByAccount({...account,providerAccountId:'unknown'}),null);
+ await adapter.createSession({sessionToken:token,userId:user.id,expires:new Date(Date.now()+3600000)});
+ await adapter.createSession({sessionToken:expired,userId:user.id,expires:new Date(Date.now()-60000)});
+ const build=spawnSync(process.execPath,[next,'build'],{env:process.env,encoding:'utf8'});assert.equal(build.status,0,build.stdout+build.stderr);
+ await start();
+ assert.equal((await get('/api/protected')).status,401);
+ assert.equal((await get('/api/protected','forged')).status,401);
+ assert.equal((await get('/api/protected',token)).status,200);
+ assert.equal((await get('/api/case',token)).status,403);
+ assert.equal((await get('/api/case')).status,401);
+ assert.equal((await (await get('/api/auth/session',token)).json()).user.email,user.email);
+ const response=await get('/api/auth/session',token);
+ const headers=response.headers.getSetCookie().join(';');
+ assert.match(headers,/HttpOnly/i);assert.match(headers,/SameSite=Lax/i);assert.match(headers,/Path=\//i);
+ assert(!/; Secure/i.test(headers),'loopback HTTP cookie mode');
+ await stop();await start();
+ assert.equal((await get('/api/protected',token)).status,200,'same DB token survives Next process restart');
+ assert.equal((await get('/api/protected',expired)).status,401);
+ assert.equal(await adapter.getSessionAndUser(expired),null);
+ const post=(body,c)=>fetch('http://127.0.0.1:3107/api/auth/signout',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded',cookie:c},body:new URLSearchParams(body),redirect:'manual'});
+ const missing=await post({},cookie(token));assert.match(missing.headers.get('location')??'',/MissingCSRF/);
+ assert(await adapter.getSessionAndUser(token));
+ const csrfResponse=await get('/api/auth/csrf',token),{csrfToken}=await csrfResponse.json();
+ const csrfCookies=csrfResponse.headers.getSetCookie().map(v=>v.split(';')[0]).join('; ');
+ const bad=await post({csrfToken:'forged'},cookie(token)+'; '+csrfCookies);
+ assert.match(bad.headers.get('location')??'',/MissingCSRF/);assert(await adapter.getSessionAndUser(token));
+ const signedOut=await post({csrfToken},cookie(token)+'; '+csrfCookies);
+ assert(!/MissingCSRF/.test(signedOut.headers.get('location')??''));
+ assert.equal(await adapter.getSessionAndUser(token),null);
+ assert.match(signedOut.headers.getSetCookie().join(';'),/Max-Age=0/i);
+ assert.equal((await get('/api/protected',token)).status,401,'replayed cookie rejected');
+ await adapter.createSession({sessionToken:token,userId:user.id,expires:new Date(Date.now()+3600000)});
+ await adapter.deleteSession(token);assert.equal((await get('/api/protected',token)).status,401);
+ await adapter.createSession({sessionToken:token,userId:user.id,expires:new Date(Date.now()+3600000)});
+ await stop();await start(true);
+ const secure=await get('/api/auth/session',token,true);
+ assert.equal((await secure.json()).user.email,user.email);
+ const sh=secure.headers.getSetCookie().join(';');assert.match(sh,/__Secure-authjs.session-token/);assert.match(sh,/; Secure/i);assert.match(sh,/HttpOnly/i);assert.match(sh,/SameSite=Lax/i);
+ await stop();
+ await adapter.unlinkAccount(account);assert.equal(await adapter.getUserByAccount(account),null);
+ assert.equal((await adapter.getUser(user.id)).id,user.id);
+ console.log('PASS: production Next HTTP routes + Auth.js core DB adapter; persistence/restart, expiry, forged/revoked/replay rejection; Cookie flags/clear, missing/invalid/valid CSRF; account unique-owner/FK/link/unlink; 401 authentication and 403 case boundary');
+ console.log('LIMITS: synthetic adapter-seeded sessions/accounts; no OAuth/login issuance, browser/TLS/proxy, real users, email, real case authorization or production enablement');
+}finally{await stop();await pool.end();await log.close();}
