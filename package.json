@@ -1,0 +1,25 @@
+{
+  "name": "satoyama-nexus",
+  "private": true,
+  "packageManager": "pnpm@11.25.0",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @satoyama/web dev",
+    "build": "pnpm --filter @satoyama/web build",
+    "typecheck": "pnpm -r typecheck && tsc -p tsconfig.json",
+    "test": "vitest run",
+    "db:check": "node scripts/check-db.mjs"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.3",
+    "vitest": "5.1.0",
+    "pg": "^8.16.3",
+    "@types/node": "^24.0.0",
+    "@satoyama/domain": "workspace:*",
+    "@satoyama/matching": "workspace:*",
+    "@satoyama/ai-review": "workspace:*"
+  },
+  "type": "module"
+}

@@ -1,0 +1,10 @@
+[
+  {
+    "kind": "simulated-profile",
+    "id": "sim-person-001",
+    "displayName": "模擬参加者 A",
+    "skills": [
+      "植生観察"
+    ]
+  }
+]
