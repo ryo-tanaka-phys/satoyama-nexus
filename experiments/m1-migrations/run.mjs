@@ -57,11 +57,13 @@ try{
     const full=await readFile(root+'/migrations/meta/_journal.json','utf8');
     await writeFile(root+'/migrations/meta/_journal.json',JSON.stringify({...journal,entries:journal.entries.slice(0,1)}));
     await migrate(c,u.href);
+    await c.query("INSERT INTO m1_simulation.actor VALUES ('survivor','person','PRESERVE AFTER FAILURE')");
     await writeFile(root+'/migrations/meta/_journal.json',full);
     const f=root+'/migrations/'+journal.entries[1].tag+'.sql', original=await readFile(f,'utf8');
     await writeFile(f,original+'\n--> statement-breakpoint\nSELECT * FROM injected_missing_relation;\n');
     kit(['migrate'],u.href,false);
     assert.equal((await history(c)).length,1);
+    assert.equal((await c.query("SELECT display_name FROM m1_simulation.actor WHERE id='survivor'")).rows[0].display_name,'PRESERVE AFTER FAILURE');
     assert.equal((await c.query("select to_regclass('m1_simulation.audit_event') t")).rows[0].t,null);
     await writeFile(f,original);await migrate(c,u.href);
    }else await migrate(c,u.href);
