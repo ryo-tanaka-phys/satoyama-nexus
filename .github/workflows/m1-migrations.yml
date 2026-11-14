@@ -1,0 +1,57 @@
+name: M1 Kit migration acceptance
+on:
+  pull_request:
+    paths: ['experiments/m1-migrations/**', '.github/workflows/m1-migrations.yml']
+  push:
+    branches: ['codex/m1-migrations']
+permissions:
+  contents: read
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgis/postgis:17-3.5
+        env:
+          POSTGRES_DB: m1_experiment
+          POSTGRES_USER: m1_experiment
+          POSTGRES_PASSWORD: ci-only
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U m1_experiment -d m1_experiment"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      DATABASE_URL: postgresql://m1_experiment:ci-only@localhost:5432/m1_experiment
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Isolated pinned candidates
+        run: |
+          mkdir -p "$RUNNER_TEMP/m1-migrations"
+          cp -R experiments/m1-migrations/. "$RUNNER_TEMP/m1-migrations/"
+          cd "$RUNNER_TEMP/m1-migrations"
+          npm init -y
+          npm install --ignore-scripts --save-exact drizzle-orm@0.44.7 drizzle-kit@0.31.7 pg@8.16.3
+          npm ls --all > dependency-tree.txt
+          npm audit --json > audit.json || true
+          node -e "const a=require('./audit.json'); console.log(JSON.stringify({metadata:a.metadata,vulnerabilities:a.vulnerabilities,error:a.error},null,2))"
+      - name: Acceptance
+        env:
+          M1_SOURCE: ${{ github.workspace }}/experiments/m1-migrations
+        run: |
+          cd "$RUNNER_TEMP/m1-migrations"
+          node run.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: m1-migrations-evidence
+          path: |
+            ${{ runner.temp }}/m1-migrations/migrations
+            ${{ runner.temp }}/m1-migrations/package-lock.json
+            ${{ runner.temp }}/m1-migrations/dependency-tree.txt
+            ${{ runner.temp }}/m1-migrations/audit.json
+            ${{ runner.temp }}/m1-migrations/server.log
