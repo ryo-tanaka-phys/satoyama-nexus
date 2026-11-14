@@ -120,3 +120,35 @@ export function validateDomainGraph(graph: DomainGraph): void {
     requireValue(owner && owner.revision === n.owner.revision && n.description.trim(), 'Invalid need owner');
   }
 }
+
+/** Construction never imports approval or advances a case. Auth is checked by the caller. */
+export function createCollaborationDraft(
+  graph: DomainGraph, id: string, activity: CollaborationCase['activity'],
+  parties: readonly CaseParty[]
+): CollaborationCase {
+  const value: CollaborationCase = {
+    mode: 'simulation', id, activity: { ...activity }, revision: 1,
+    stage: 'draft', parties: parties.map(p => ({ ...p }))
+  };
+  validateDomainGraph({ ...graph, cases: [...graph.cases, value] });
+  return value;
+}
+
+/** Explicit M0 mapping. Existing reviews and advanced stages cannot become M1 approvals. */
+export function migrateM0Draft(
+  graph: DomainGraph,
+  legacy: import('./index').SimulationCase,
+  mapping: {
+    activity: CollaborationCase['activity'];
+    actorId: string;
+    role: string;
+  }
+): CollaborationCase {
+  requireValue(legacy.mode === 'simulation' && legacy.stage === 'draft', 'Only M0 drafts can migrate');
+  requireValue(legacy.activityId === mapping.activity.id, 'Activity mapping mismatch');
+  requireValue(legacy.profileId.trim(), 'Missing M0 profile');
+  // Mapping is an explicit migration input, never an identity or delegation grant.
+  return createCollaborationDraft(graph, legacy.id, mapping.activity, [
+    { actorId: mapping.actorId, role: mapping.role }
+  ]);
+}
