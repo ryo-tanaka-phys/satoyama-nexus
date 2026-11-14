@@ -13,7 +13,7 @@ export const adapter={
  getUserByEmail:email=>one('SELECT * FROM auth_spike.users WHERE email=$1',[email]),
  getUserByAccount:({provider,providerAccountId})=>one('SELECT u.* FROM auth_spike.users u JOIN auth_spike.accounts a ON a."userId"=u.id WHERE a.provider=$1 AND a."providerAccountId"=$2',[provider,providerAccountId]),
  async updateUser(u){
-  const old=await this.getUser(u.id);if(!old)throw Error('missing user');
+  const old=await adapter.getUser(u.id);if(!old)throw Error('missing user');
   const n={...old,...u};return one('UPDATE auth_spike.users SET name=$2,email=$3,"emailVerified"=$4,image=$5 WHERE id=$1 RETURNING *',[u.id,n.name,n.email,n.emailVerified,n.image]);
  },
  async linkAccount(a){return one('INSERT INTO auth_spike.accounts(provider,"providerAccountId","userId",type) VALUES ($1,$2,$3,$4) RETURNING *',[a.provider,a.providerAccountId,a.userId,a.type]);},
@@ -21,7 +21,7 @@ export const adapter={
  createSession:s=>one('INSERT INTO auth_spike.sessions("sessionToken","userId",expires) VALUES ($1,$2,$3) RETURNING *',[s.sessionToken,s.userId,s.expires]),
  async getSessionAndUser(t){
   const session=await one('SELECT * FROM auth_spike.sessions WHERE "sessionToken"=$1',[t]);if(!session)return null;
-  const user=await this.getUser(session.userId);return user?{session,user}:null;
+  const user=await adapter.getUser(session.userId);return user?{session,user}:null;
  },
  async updateSession(s){
   const old=await one('SELECT * FROM auth_spike.sessions WHERE "sessionToken"=$1',[s.sessionToken]);if(!old)return null;
