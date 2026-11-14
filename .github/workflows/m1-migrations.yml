@@ -38,6 +38,7 @@ jobs:
           npm install --ignore-scripts --save-exact drizzle-orm@0.44.7 drizzle-kit@0.31.7 pg@8.16.3
           npm ls --all > dependency-tree.txt
           npm audit --json > audit.json || true
+          node -e "const a=require('./audit.json'); console.log(JSON.stringify({metadata:a.metadata,vulnerabilities:a.vulnerabilities,error:a.error},null,2))"
       - name: Acceptance
         env:
           M1_SOURCE: ${{ github.workspace }}/experiments/m1-migrations
