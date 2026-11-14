@@ -52,6 +52,10 @@ describe('M1 provenance and separation',()=>{
     const g=make();
     expect(exportSimulationCase(g,'c').mode).toBe('simulation');
     expect(exportSimulationCase(g,'c').notice).toContain('模擬');
+    expect(()=>validateProvenanceGraph({...g,cases:[{...g.cases[0],
+      activity:{...g.cases[0].activity,simulatedActivityId:'second'} as any}]})).toThrow('Unexpected');
+    const sim=appendActivityRevision(g,{id:'fiction',domain:'simulation',revision:1,title:'完全架空'},[],[]);
+    expect(exportPublicCatalog(sim).activities.some(a=>a.id==='fiction')).toBe(false);
     const catalog=exportPublicCatalog(g);
     expect(catalog).not.toHaveProperty('cases');
     expect(catalog).not.toHaveProperty('interests');
