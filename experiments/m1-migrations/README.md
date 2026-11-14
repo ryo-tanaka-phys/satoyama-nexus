@@ -11,7 +11,7 @@ PR #13のdb.execute/CREATE IF NOT EXISTS反復とは別試験。移行履歴はK
 ## 境界と残課題
 候補表は公開活動版、模擬Actor/Case/Party、監査と位置の最小部分。#12の全項目出典・Actor改訂、完全架空Activity、Need/条件、審査/認可、M0データ写像は未実装。公開Actorは参照先に存在せずPartyへ投入できない。認証や実同意を生成しない。
 制約/権限の確認は専用NOLOGINロールのSELECT/INSERT許可、履歴UPDATE/DELETEとcatalog書込拒否。製品用ロール設計や管理者改変防止の証明ではない。
-本番バックアップ復元、複数同時migrator、ロック/大規模データ、非トランザクションDDL、PostGIS更新、既存M1表のbaselineは未検証。Kit custom journalの生成時刻は実行ごとに変わるため、実運用前には生成済み成果物を固定・レビューする必要がある。
+本番バックアップ復元、複数同時migrator、ロック/大規模データ、非トランザクションDDL、PostGIS更新、既存M1表のbaselineは未検証。Kit生成journalの順序/tag/区切り設定を検査後、版管理済みmeta/_journal.jsonの固定ID/時刻を使用する。全DBで同じSQLと履歴IDを適用する。本採用時にはSQL/journal全体のレビューが必要。
 
 製品コード、package.json、pnpm-lock.yamlの変更なし。直接候補版は固定、推移依存は実行時解決でartifactにlock/treeを保存。auditは結果を保存するが成功扱いで安全性を保証しない。古い0.x候補/Kitの版互換、推移依存、保守変更を本採用前に再評価する。
 ローカルはネットワーク/Docker利用不可。CI結果はPR本文に記録する。

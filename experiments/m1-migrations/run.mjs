@@ -22,8 +22,12 @@ for(const [i,name] of ['domains','audit'].entries()){
  const files=(await readdir(root+'/migrations')).filter(f=>f.endsWith('.sql')).sort();
  await writeFile(root+'/migrations/'+files[i],await readFile(source+'/000'+i+'_'+name+'.sql'));
 }
-const journal=JSON.parse(await readFile(root+'/migrations/meta/_journal.json'));
-assert.equal(journal.entries.length,2);
+const generated=JSON.parse(await readFile(root+'/migrations/meta/_journal.json'));
+const journal=JSON.parse(await readFile(source+'/meta/_journal.json'));
+assert.equal(generated.entries.length,2);
+assert.deepEqual(generated.entries.map(e=>[e.idx,e.tag,e.breakpoints]),journal.entries.map(e=>[e.idx,e.tag,e.breakpoints]));
+// Preserve version-controlled identities/timestamps across every installation.
+await writeFile(root+'/migrations/meta/_journal.json',JSON.stringify(journal,null,2)+'\n');
 const hash=s=>createHash('sha256').update(s).digest('hex');
 async function history(c){return (await c.query('select hash,created_at from drizzle.__drizzle_migrations order by created_at')).rows;}
 async function verify(c){
