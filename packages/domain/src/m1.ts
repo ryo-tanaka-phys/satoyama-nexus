@@ -53,6 +53,8 @@ export interface DomainGraph {
   actors: readonly Actor[];
   memberships: readonly ActorMembership[];
   activities: readonly Activity[];
+  /** Historical snapshots, including current heads when supplied. */
+  activityRevisions?: readonly Activity[];
   activityParties: readonly ActivityParty[];
   cases: readonly CollaborationCase[];
   interests: readonly ParticipationInterest[];
@@ -75,6 +77,18 @@ export function validateDomainGraph(graph: DomainGraph): void {
   unique(graph.needs.map(n => n.id), 'need');
   const actors = new Map(graph.actors.map(a => [a.id, a]));
   const activities = new Map(graph.activities.map(a => [a.id, a]));
+  const revisions = graph.activityRevisions ?? graph.activities;
+  unique(revisions.map(a => JSON.stringify([a.domain,a.id,a.revision])), 'activity revision');
+  for (const r of revisions) {
+    version(r.revision);
+    const head = activities.get(r.id);
+    requireValue(head && head.domain === r.domain && r.revision <= head.revision && r.title.trim(), 'Invalid activity history');
+  }
+  for (const head of graph.activities) {
+    requireValue(revisions.some(r => r.id === head.id && r.domain === head.domain &&
+      r.revision === head.revision && r.title === head.title), 'Missing current activity revision');
+  }
+  const findRevision = (id: string, revision: number) => revisions.find(r => r.id === id && r.revision === revision);
   const cases = new Map(graph.cases.map(c => [c.id, c]));
   for (const a of graph.actors) {
     requireValue(['public-catalog', 'simulation'].includes(a.domain), 'Invalid actor domain');
@@ -99,7 +113,7 @@ export function validateDomainGraph(graph: DomainGraph): void {
   }
   for (const c of graph.cases) {
     version(c.revision); version(c.activity.revision);
-    const a = activities.get(c.activity.id);
+    const a = findRevision(c.activity.id, c.activity.revision);
     requireValue(c.mode === 'simulation', 'Simulation only');
     requireValue(a && a.domain === c.activity.domain && a.revision === c.activity.revision, 'Unknown activity revision');
     requireValue(['draft','requested','coordinating','agreed','preparing'].includes(c.stage), 'Invalid stage');
@@ -115,7 +129,7 @@ export function validateDomainGraph(graph: DomainGraph): void {
   }
   for (const n of graph.needs) {
     version(n.owner.revision);
-    const owner = n.owner.kind === 'activity' ? activities.get(n.owner.id) :
+    const owner = n.owner.kind === 'activity' ? findRevision(n.owner.id, n.owner.revision) :
       n.owner.kind === 'case' ? cases.get(n.owner.id) : undefined;
     requireValue(owner && owner.revision === n.owner.revision && n.description.trim(), 'Invalid need owner');
   }
