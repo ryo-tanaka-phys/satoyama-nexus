@@ -20,3 +20,19 @@ Refs # / 担当 / 基点SHA / base・head / 依存PR / 非対象
 - [ ] 作成者以外によるレビューを依頼
 - [ ] 実AI・実アカウント・外部OAuth/メール運用なし
 - [ ] 採用・mergeは所有者の明示承認待ち
+
+
+## 子Issueの提出・統合・成果受領
+親 # / 子 # / 担当 / 独立レビュー者
+source基点SHA / 依存成果SHA / 提出head SHA / CI実行SHA
+専有ファイル / 未実施・skip・不具合 / 具体版承認URL（必要な場合）
+- [ ] 子の受け入れ条件と証跡を対応付けた
+- [ ] 必要CI・lock/tree/auditの終了コードを確認した（対象外は理由記載）
+- [ ] 作成者以外がレビューした
+- [ ] 所有者が検証成果を受領した（merge/技術採用とは別）
+統合PRの場合: 集約コミットSHA / 同一headの全suite結果 / 既存PRを変更していないこと
+
+## 状態・承認ゲート
+状態: Proposed / Ready / In Progress / Review / Blocked / Accepted
+G0承認根拠 / G18・G19の必要性と承認URL / WIP（実装・検証中1件、レビュー待ち1件）
+Acceptedは検証成果の受領。PRのマージ・技術本採用・Issueクローズは別の明示判断。自動closeキーワードを使わない。
