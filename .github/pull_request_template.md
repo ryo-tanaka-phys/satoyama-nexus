@@ -36,3 +36,8 @@ source基点SHA / 依存成果SHA / 提出head SHA / CI実行SHA
 状態: Proposed / Ready / In Progress / Review / Blocked / Accepted
 G0承認根拠 / G18・G19の必要性と承認URL / WIP（実装・検証中1件、レビュー待ち1件）
 Acceptedは検証成果の受領。PRのマージ・技術本採用・Issueクローズは別の明示判断。自動closeキーワードを使わない。
+
+## AI補助と人間レビューの区別
+AI使用の有無・補助した範囲 / guide SHA:
+人間の独立レビュー者・レビューURL・対象head:
+- [ ] AI監査/自己点検/CIを人間の第三者レビューや所有者の成果受領として記録していない

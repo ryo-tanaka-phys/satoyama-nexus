@@ -95,3 +95,70 @@ DAG（作業依存）:
 3. 子ごとのDraft PRへ提出。source SHA、submit head、CIのcheckout/run SHAを分けて記録し、必要CIと第三者レビューを確認する。
 4. 所有者の成果受領でAccepted。親のチェックを更新してもPRマージ/Issueクローズ/本採用を自動実行しない。
 WIPは各担当者の実装・検証中1件、レビュー待ち1件を原則上限とする。Projectsなしでもこの親表で運用する。
+
+## C0で確認した監査と未確認範囲
+2026-11-18の[招待前監査](c0-audit-20261118.md)を参照する。前述の11月14日時点記録は履歴として残す。C0では10ブランチ・45到達可能コミット・98種類のtext blob、36 Issue/PR・コメント7件、105ジョブログ、18 artifact/112エントリを検査した。実秘密の確定検出はないが、未確認の管理設定は安全判定していない。
+現在の契約プラン、既存アクセス/招待、Secrets/Variables、Apps/Webhooks/Environment/deploy keysは所有者確認が必要。AI監査を人間の第三者レビューや招待可の承認と解釈しない。
+
+## 所有者が行う招待前確認・設定判断
+1. GitHubのプロフィール→Settings→Billing & Licensing→LicensingでCurrent planを**閲覧だけ**して記録する。アップグレード/支払/移行は別判断。[公式案内](https://docs.github.com/en/billing/how-tos/manage-plan-and-licenses/upgrade-plan)
+2. repoのSettings→Collaborators/Accessで既存アクセス・保留招待を確認。Secrets and variables→ActionsのSecrets/VariablesとEnvironments、Deploy keys、Webhooks、アカウントのApplicationsで対象repoへのInstalled/Authorized Appsの権限を確認する。秘密の値を共有せず、設定名/用途/権限/所有者確認日だけをGitHubへ記録する。
+3. [監査の保護設定案](c0-audit-20261118.md#c0-04-推奨保護設定未設定別判断)を検討し、適用可能ならSettings→BranchesまたはRulesのmainルール、Actions→GeneralのWorkflow permissionsを所有者が別途設定判断する。個人privateで保護できるプランかを先に確認。無承認で設定しない。
+4. 協力者のGitHubユーザー名を本人に確認し、所有者がこのrepoの範囲・write権限・AIサービスへのprivateコード取扱いを説明する。人間の判断後だけ招待する。ユーザー名が未確認の現時点では招待/割当をしない。
+5. 相手はGitHub上の招待を受領し、repo名・所有者・privateを確認。所有者のアカウント/鍵/PATを共有しない。実アカウント運用禁止とは製品のログイン運用のことで、共同開発用に本人のGitHubアカウントを使うこととは区別する。
+6. 相手の受領後に開始コメントと担当/レビュー者を確定し、#21/#22へ個別着手する。今回これらの操作はしていない。
+
+## 他言語経験者向け最小導入
+既存のプログラミング経験を前提に、まずGit/Node/pnpm/画面構成だけ確認する。Dockerは#21の前提ではない。
+- Gitは変更履歴とブランチ、Draft PRはレビュー提出場所。source SHAは試すコード、guide SHAは読む規則、PR baseは差分の提出先であり別の値。
+- Node.jsはJavaScriptの実行環境、pnpmはpackage.json/lockfileに従う依存管理、TypeScriptは型検査を加えたソース言語。新しいライブラリやlockfileを自分の判断で更新しない。
+- Next.jsの画面はapps/web/app/page.tsx、共通枠はlayout.tsx、root package.jsonのdev/buildはwebへ転送する。packages/domain・matching・ai-reviewは責務の違うモジュール。#21は構成を読むだけで製品コードを変えない。
+- Node 24 / pnpm 11.25.0を準備し、[AIガイドの#21手順](ai-workflow.md#21の最小実行経路後日担当確定後)でclone・固定規則の読取・sourceからの専用ブランチ・起動/型検査/試験/build・Draft PR提出を進める。
+- 使用AIの種類は任意。AGENTSを明示的に読み込ませ、GitHub接続がない場合は人間が固定SHAの原典とIssue本文/コメントを渡す。[汎用開始プロンプト](ai-workflow.md#汎用ai作業開始プロンプト)を使用できる。
+
+## C0初回サイクルと開始コメント案
+今回の所有者指示で役割計画を固定する。実アカウントへの割当はまだ行わない。
+
+|レーン|担当予定|作業|別の人間レビュー者|提出base|
+|---|---|---|---|---|
+|A|所有者|#22 PostGIS再現|協力者（ユーザー名確認後）|main|
+|B|協力者（ユーザー名未確認）|#21 Web再現|所有者|main|
+
+各自の実装・検証中WIP上限1件、Review待ち上限1件。独立ブランチ・独立Draft PRで進め、相手の完了や既存PRマージを待たない。#21/#22の検証自体はC0で実行しない。
+
+所有者/#22用の開始コメント案（**投稿せず書式のみ**）:
+
+```text
+親 #16 / 子 #22（16-02）
+担当予定: 所有者 / 人間レビュー者: 協力者（ユーザー名確認後に確定）
+状態: Ready → 担当/レビュー者の確定と個別開始後にIn Progress
+source: 36c352fbb503047f8240e7a87d617485609aa297
+guide: <PR #20から取得し記録した40桁SHA> / 依存成果: なし
+branch: codex/issue-22-16-02 / PR base: main
+変更可: docs/quality/16-02-postgis-environment.mdのみ
+検証: #22の専用Compose projectで起動/接続/停止/同じvolumeで再起動/再接続
+期待: PostGISスモーク成功、既存DB・サービスを破壊しない
+承認: G0/C0の運用準備承認。G18/G19対象の版変更はしない
+WIP: 実装/検証中1件以下、Review待ち1件以下
+```
+
+協力者/#21用の開始コメント案（**投稿せず書式のみ**）:
+
+```text
+親 #16 / 子 #21（16-01）
+担当予定: 協力者（本人のユーザー名確認後） / 人間レビュー者: 所有者
+状態: Ready → 担当/レビュー者の確定と個別開始後にIn Progress
+source: 36c352fbb503047f8240e7a87d617485609aa297
+guide: <PR #20から取得し記録した40桁SHA> / 依存成果: なし
+branch: codex/issue-21-16-01 / PR base: main
+変更可: docs/quality/16-01-web-environment.mdのみ
+検証: install --frozen-lockfile / devの模擬表示 / typecheck / test / build
+期待: DBなしで起動し、4自動コマンド成功。失敗/未実施は区別して記録
+承認: G0/C0の運用準備承認。G18/G19対象の版変更はしない
+WIP: 実装/検証中1件以下、Review待ち1件以下
+```
+
+## 協力者による#22レビューと#23判定
+#22のsource/guide/submit/run SHA、専用Compose project・非共有volume、初期化SQLの新規volume条件、接続/PostGIS版/距離0m、停止→同じvolumeの再起動→再接続、終了コードを確認する。既存DBの削除や秘密値が証跡にないかも確認する。距離0mのスモークを一般の空間精度やM1永続化の保証としない。
+可能な範囲で自分の独立環境から同じ手順を追試する。Dockerを用意できなければ「文書/コード照合のみ、追試未実施」と記録し、追試必須条件を満たしたと承認しない。AIの点検結果は補助として別記する。
+所有者は#21を同様に別人レビューし、必要CI・期待表示・未実施を照合する。両成果が第三者照合を満たし、所有者がAcceptedとして受領してから#23の着手可否を判断する。PRのマージは#23の前提にしない。未解決の必須失敗がある場合はBlockedを維持し、範囲縮小や期待値緩和で合わせない。
