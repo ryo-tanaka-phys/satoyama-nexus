@@ -42,3 +42,6 @@ CIでは独立したテストDBに初期化SQLを適用しpnpm db:checkを実行
 作業ブランチからPRを作成し、承認後にmainへ統合する。秘密情報をログ・Issue・コミットへ含めない。
 実在活動データの収集、認証、永続化、実AI、審査UI、推薦・地理検索、模擬協働の操作UIは後続工程。
 M0の型と検証関数は本番の権限管理を代替しない。
+
+## 共同作業
+担当・ブランチ・レビュー手順は[CONTRIBUTING.md](CONTRIBUTING.md)、招待前確認と依存関係は[協力者オンボーディング](docs/collaboration/onboarding.md)を参照してください。
