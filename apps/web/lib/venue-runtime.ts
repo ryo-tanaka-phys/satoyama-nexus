@@ -16,8 +16,19 @@ export function setActiveVenueFoundationStoreForTest(store: VenueFoundationStore
   globalForVenue.__satoyamaTestOverrideVenueStore = store;
 }
 
+function resolveConfiguredDatabaseUrl(): string {
+  return process.env.DATABASE_URL?.trim() || process.env.POSTGRES_URL?.trim() || '';
+}
+
+export function getVenuePersistenceMode(): 'postgis' | 'memory' {
+  if (globalForVenue.__satoyamaTestOverrideVenueStore) {
+    return 'memory';
+  }
+  return resolveConfiguredDatabaseUrl() ? 'postgis' : 'memory';
+}
+
 /**
- * Returns PostgreSQL/PostGIS-backed venue store when DATABASE_URL is configured,
+ * Returns PostgreSQL/PostGIS-backed venue store when DATABASE_URL (or POSTGRES_URL) is configured,
  * falling back cleanly to the in-memory foundation store when unset.
  */
 export function getActiveVenueFoundationStore(): VenueFoundationStorePort {
@@ -25,7 +36,7 @@ export function getActiveVenueFoundationStore(): VenueFoundationStorePort {
     return globalForVenue.__satoyamaTestOverrideVenueStore;
   }
 
-  const dbUrl = process.env.DATABASE_URL?.trim();
+  const dbUrl = resolveConfiguredDatabaseUrl();
   if (dbUrl) {
     if (!globalForVenue.__satoyamaPgVenueStore) {
       const pool = createPgPoolForWorkbench(dbUrl);

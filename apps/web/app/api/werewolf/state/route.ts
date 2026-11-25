@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getActiveVenueFoundationStore } from '../../../../lib/venue-runtime';
+import { getActiveVenueFoundationStore, getVenuePersistenceMode } from '../../../../lib/venue-runtime';
 import { extractSessionTokenFromCookieHeader } from '../../../../lib/venue-session';
 import { buildClassroomVerificationCoverage } from '../../../../lib/werewolf-coverage';
 
@@ -41,6 +41,7 @@ export async function GET(request: Request) {
     myAssignment: myAssignment?.assignment ?? null,
     participantCount: activeRoomState?.participants.length ?? 0,
     participantNames: activeRoomState ? activeRoomState.participants.map((p) => p.displayName) : [],
-    verificationCoverage
+    verificationCoverage,
+    persistenceMode: getVenuePersistenceMode()
   });
 }

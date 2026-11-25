@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { checkCertifiedOrganizationAccess, toPublicVenueProfile } from '@satoyama/domain';
-import { getActiveVenueFoundationStore } from '../../../../lib/venue-runtime';
+import { getActiveVenueFoundationStore, getVenuePersistenceMode } from '../../../../lib/venue-runtime';
 import { extractSessionTokenFromCookieHeader } from '../../../../lib/venue-session';
 
 export const dynamic = 'force-dynamic';
@@ -49,6 +49,7 @@ export async function GET(request: Request) {
     notifications,
     orgChatMessages,
     publicApprovalVisibility,
+    persistenceMode: getVenuePersistenceMode(),
     snapshot,
     serverTimestamp: new Date().toISOString()
   });

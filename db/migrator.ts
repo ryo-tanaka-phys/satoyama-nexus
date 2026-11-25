@@ -56,53 +56,68 @@ const MIGRATION_ADVISORY_LOCK_KEY = 72819401;
 
 /**
  * Verifies applied history checksums against loaded files and applies pending migrations
- * in per-file transactions under a session-level PostgreSQL advisory lock (preventing
- * concurrent serverless cold-start races). Never uses DROP/TRUNCATE/reset.
+ * in per-file transactions under a transaction-scoped PostgreSQL advisory lock
+ * (`pg_advisory_xact_lock`, compatible with both direct Postgres and Neon/PgBouncer
+ * transaction pooling while preventing concurrent serverless cold-start races).
+ * Never uses DROP/TRUNCATE/reset.
  */
 export async function applyMigrations(
   client: PoolClient,
   migrations: readonly MigrationFile[]
 ): Promise<{ applied: string[]; skipped: string[] }> {
-  await client.query('SELECT pg_advisory_lock($1)', [MIGRATION_ADVISORY_LOCK_KEY]);
+  const fileMap = new Map(migrations.map((m) => [m.version, m.checksum]));
+
+  // Phase 1: bootstrap schema_migrations & verify existing checksums under xact lock
+  await client.query('BEGIN');
   try {
+    await client.query('SELECT pg_advisory_xact_lock($1)', [MIGRATION_ADVISORY_LOCK_KEY]);
     await ensureMigrationHistoryTable(client);
     const existing = await getAppliedMigrations(client);
-    const existingMap = new Map(existing.map((r) => [r.version, r.checksum]));
-
-    // Verify no applied migration is missing from files or tampered with
-    const fileMap = new Map(migrations.map((m) => [m.version, m.checksum]));
     for (const rec of existing) {
       const expectedChecksum = fileMap.get(rec.version);
       if (!expectedChecksum || expectedChecksum !== rec.checksum) {
         throw new Error(`Migration checksum mismatch or missing file for applied version: ${rec.version}`);
       }
     }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  }
 
-    const applied: string[] = [];
-    const skipped: string[] = [];
+  const applied: string[] = [];
+  const skipped: string[] = [];
 
-    for (const m of migrations) {
-      if (existingMap.has(m.version)) {
+  // Phase 2: apply each pending migration atomically under xact lock
+  for (const m of migrations) {
+    await client.query('BEGIN');
+    try {
+      await client.query('SELECT pg_advisory_xact_lock($1)', [MIGRATION_ADVISORY_LOCK_KEY]);
+      const check = await client.query<{ checksum: string }>(
+        'SELECT checksum FROM public.schema_migrations WHERE version = $1',
+        [m.version]
+      );
+      if (check.rows.length > 0) {
+        if (check.rows[0].checksum !== m.checksum) {
+          throw new Error(`Migration checksum mismatch or missing file for applied version: ${m.version}`);
+        }
+        await client.query('COMMIT');
         skipped.push(m.version);
         continue;
       }
-      await client.query('BEGIN');
-      try {
-        await client.query(m.sql);
-        await client.query(
-          'INSERT INTO public.schema_migrations (version, checksum) VALUES ($1, $2)',
-          [m.version, m.checksum]
-        );
-        await client.query('COMMIT');
-        applied.push(m.version);
-      } catch (err) {
-        await client.query('ROLLBACK');
-        throw err;
-      }
-    }
 
-    return { applied, skipped };
-  } finally {
-    await client.query('SELECT pg_advisory_unlock($1)', [MIGRATION_ADVISORY_LOCK_KEY]);
+      await client.query(m.sql);
+      await client.query(
+        'INSERT INTO public.schema_migrations (version, checksum) VALUES ($1, $2)',
+        [m.version, m.checksum]
+      );
+      await client.query('COMMIT');
+      applied.push(m.version);
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    }
   }
+
+  return { applied, skipped };
 }

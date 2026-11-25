@@ -683,7 +683,7 @@ const globalForRuntime = globalThis as unknown as {
  * falling back cleanly to the in-memory SimulationWorkbench when unset.
  */
 export function getActiveWorkbench(): ActiveWorkbench {
-  const dbUrl = process.env.DATABASE_URL?.trim();
+  const dbUrl = process.env.DATABASE_URL?.trim() || process.env.POSTGRES_URL?.trim();
   if (dbUrl) {
     if (!globalForRuntime.__satoyamaPgWorkbench) {
       const pool = createPgPoolForWorkbench(dbUrl);
