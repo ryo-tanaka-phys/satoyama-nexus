@@ -139,6 +139,72 @@ export interface MediatedAIPrimaryAssessment {
   generatedAt: string;
 }
 
+export interface OrgCalendarEventRecord {
+  id: string;
+  organizationActorId: string;
+  title: string;
+  scheduledDate: string;
+  gridCellId: string | null;
+  status: 'planned' | 'completed';
+  participantCount: number;
+  summary: string;
+  createdAt: string;
+}
+
+export interface OrgChatMessageRecord {
+  id: string;
+  organizationActorId: string;
+  senderAccountId: string;
+  senderDisplayName: string;
+  body: string;
+  createdAt: string;
+}
+
+export interface ActivityReportRecord {
+  id: string;
+  organizationActorId: string;
+  title: string;
+  periodLabel: string;
+  calendarEventCount: number;
+  socialLogCount: number;
+  expertAdviceCount: number;
+  summaryText: string;
+  evidenceSnapshot: Readonly<Record<string, unknown>>;
+  createdByAccountId: string;
+  createdAt: string;
+}
+
+export interface CreateOrgCalendarEventInput {
+  organizationActorId: string;
+  title: string;
+  scheduledDate: string;
+  gridCellId?: string | null;
+  status?: 'planned' | 'completed';
+  participantCount?: number;
+  summary?: string;
+}
+
+export interface AddDummyOrgMemberInput {
+  organizationActorId: string;
+  displayName: string;
+  roleNote?: string;
+}
+
+export interface PostOrgChatMessageInput {
+  organizationActorId: string;
+  senderAccountId: string;
+  senderDisplayName: string;
+  body: string;
+}
+
+export interface GenerateActivityReportInput {
+  organizationActorId: string;
+  createdByAccountId: string;
+  title: string;
+  periodLabel: string;
+  additionalNote?: string;
+}
+
 export interface VenueFoundationSnapshot {
   actors: readonly Actor[];
   publicProfiles: readonly PublicVenueProfileView[];
@@ -151,6 +217,8 @@ export interface VenueFoundationSnapshot {
   activeConnections: readonly ActiveConnectionRecord[];
   certificationRequests: readonly CertificationRequestRecord[];
   auditEvents: readonly VenueAuditEventRecord[];
+  orgCalendarEvents: readonly OrgCalendarEventRecord[];
+  activityReports: readonly ActivityReportRecord[];
 }
 
 export interface SubmitCertificationRequestInput {
@@ -260,6 +328,28 @@ export interface VenueFoundationStorePort {
     input: Omit<VenueAuditEventRecord, 'id' | 'occurredAt'>,
     nowIso?: string
   ): Promise<VenueAuditEventRecord>;
+  createOrgCalendarEvent(
+    input: CreateOrgCalendarEventInput,
+    nowIso?: string
+  ): Promise<OrgCalendarEventRecord>;
+  updateOrgCalendarEventStatus(
+    eventId: string,
+    organizationActorId: string,
+    status: 'planned' | 'completed'
+  ): Promise<OrgCalendarEventRecord>;
+  addDummyOrgMember(
+    input: AddDummyOrgMemberInput,
+    nowIso?: string
+  ): Promise<{ actor: Actor; membership: SeedDummyMembership }>;
+  listOrgChatMessages(organizationActorId: string): Promise<readonly OrgChatMessageRecord[]>;
+  postOrgChatMessage(
+    input: PostOrgChatMessageInput,
+    nowIso?: string
+  ): Promise<OrgChatMessageRecord>;
+  generateActivityReport(
+    input: GenerateActivityReportInput,
+    nowIso?: string
+  ): Promise<{ report: ActivityReportRecord; auditEvent: VenueAuditEventRecord }>;
 }
 
 function haversineDistanceMeters(
@@ -369,6 +459,9 @@ export class InMemoryVenueFoundationStore implements VenueFoundationStorePort {
   private notifications: VenueNotificationRecord[] = [];
   private certificationRequests: CertificationRequestRecord[] = [];
   private auditEvents: VenueAuditEventRecord[] = [];
+  private orgCalendarEvents: OrgCalendarEventRecord[] = [];
+  private orgChatMessages: OrgChatMessageRecord[] = [];
+  private activityReports: ActivityReportRecord[] = [];
   private seq = 1;
 
   async ensureSeeded(): Promise<void> {
@@ -397,7 +490,9 @@ export class InMemoryVenueFoundationStore implements VenueFoundationStorePort {
       comments: structuredClone(this.comments),
       activeConnections: structuredClone(this.activeConnections),
       certificationRequests: structuredClone(this.certificationRequests),
-      auditEvents: structuredClone(this.auditEvents)
+      auditEvents: structuredClone(this.auditEvents),
+      orgCalendarEvents: structuredClone(this.orgCalendarEvents),
+      activityReports: structuredClone(this.activityReports)
     };
   }
 
@@ -1071,6 +1166,184 @@ export class InMemoryVenueFoundationStore implements VenueFoundationStorePort {
 
     return { ok: true, auditEvent, notificationSent: false };
   }
+
+  async createOrgCalendarEvent(
+    input: CreateOrgCalendarEventInput,
+    nowIso = new Date().toISOString()
+  ): Promise<OrgCalendarEventRecord> {
+    await this.ensureSeeded();
+    const title = input.title.trim();
+    if (!title) throw new Error('活動タイトルを入力してください。');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.scheduledDate.trim())) {
+      throw new Error('活動日は YYYY-MM-DD 形式で入力してください。');
+    }
+    const gridCellId = input.gridCellId?.trim() || this.profiles.get(input.organizationActorId)?.gridCellId || 'grid-r1-c2';
+    resolveGridCellCoordinates(gridCellId);
+    const participantCount = Math.max(0, Math.trunc(Number(input.participantCount ?? 0) || 0));
+
+    const ev: OrgCalendarEventRecord = {
+      id: `cal-${Date.now().toString(36)}-${this.seq++}`,
+      organizationActorId: input.organizationActorId,
+      title,
+      scheduledDate: input.scheduledDate.trim(),
+      gridCellId,
+      status: input.status === 'completed' ? 'completed' : 'planned',
+      participantCount,
+      summary: input.summary?.trim() ?? '',
+      createdAt: nowIso
+    };
+    this.orgCalendarEvents.unshift(ev);
+    return structuredClone(ev);
+  }
+
+  async updateOrgCalendarEventStatus(
+    eventId: string,
+    organizationActorId: string,
+    status: 'planned' | 'completed'
+  ): Promise<OrgCalendarEventRecord> {
+    await this.ensureSeeded();
+    const ev = this.orgCalendarEvents.find(
+      (e) => e.id === eventId && e.organizationActorId === organizationActorId
+    );
+    if (!ev) throw new Error('対象のカレンダー活動が見つかりません。');
+    ev.status = status;
+    return structuredClone(ev);
+  }
+
+  async addDummyOrgMember(
+    input: AddDummyOrgMemberInput,
+    nowIso = new Date().toISOString()
+  ): Promise<{ actor: Actor; membership: SeedDummyMembership }> {
+    await this.ensureSeeded();
+    const rawName = input.displayName.trim();
+    if (!rawName) throw new Error('ダミーメンバー名を入力してください。');
+    const displayName = rawName.startsWith('【ダミー団員】') ? rawName : `【ダミー団員】${rawName}`;
+    const actorId = `sim-kyushu-dummy-mem-${Date.now().toString(36)}-${this.seq++}`;
+    const actor: Actor = {
+      id: actorId,
+      domain: 'simulation',
+      kind: 'person',
+      displayName,
+      expertise: input.roleNote?.trim() ? [{ label: input.roleNote.trim(), evidence: null }] : []
+    };
+    this.actors.push(actor);
+    this.profiles.set(actorId, {
+      actorId,
+      gridCellId: this.profiles.get(input.organizationActorId)?.gridCellId ?? 'grid-r1-c2',
+      postalCode: null,
+      interestTags: [],
+      strengthTags: [],
+      bio: 'ダミー登録メンバー（デモ中は操作対象外・ログイン不可）',
+      ageInternal: null,
+      genderInternal: null,
+      seekingMatch: false,
+      orgCertificationStatus: 'none',
+      expertCertified: false,
+      expertCertificationNote: null,
+      updatedAt: nowIso
+    });
+    const membership: SeedDummyMembership = {
+      personActorId: actorId,
+      organizationActorId: input.organizationActorId,
+      role: 'member',
+      isDummy: true,
+      certifiedByAccountId: null,
+      certifiedAt: null
+    };
+    this.memberships.push(membership);
+    return { actor: structuredClone(actor), membership: structuredClone(membership) };
+  }
+
+  async listOrgChatMessages(organizationActorId: string): Promise<readonly OrgChatMessageRecord[]> {
+    await this.ensureSeeded();
+    return structuredClone(
+      this.orgChatMessages.filter((m) => m.organizationActorId === organizationActorId)
+    );
+  }
+
+  async postOrgChatMessage(
+    input: PostOrgChatMessageInput,
+    nowIso = new Date().toISOString()
+  ): Promise<OrgChatMessageRecord> {
+    await this.ensureSeeded();
+    const body = input.body.trim();
+    if (!body) throw new Error('チャットメッセージを入力してください。');
+    const msg: OrgChatMessageRecord = {
+      id: `chat-${Date.now().toString(36)}-${this.seq++}`,
+      organizationActorId: input.organizationActorId,
+      senderAccountId: input.senderAccountId,
+      senderDisplayName: input.senderDisplayName,
+      body,
+      createdAt: nowIso
+    };
+    this.orgChatMessages.push(msg);
+    return structuredClone(msg);
+  }
+
+  async generateActivityReport(
+    input: GenerateActivityReportInput,
+    nowIso = new Date().toISOString()
+  ): Promise<{ report: ActivityReportRecord; auditEvent: VenueAuditEventRecord }> {
+    await this.ensureSeeded();
+    const title = input.title.trim() || '活動実績 簡易透明化レポート';
+    const periodLabel = input.periodLabel.trim() || '2026年度 実証期間';
+
+    const orgEvents = this.orgCalendarEvents.filter((e) => e.organizationActorId === input.organizationActorId);
+    const completedEvents = orgEvents.filter((e) => e.status === 'completed');
+    const orgPosts = this.initialPosts.filter((p) => p.authorActorId === input.organizationActorId);
+    const orgPostIds = new Set(orgPosts.map((p) => p.id));
+    const expertAdvices = this.comments.filter((c) => orgPostIds.has(c.postId) && c.isExpertAdvice);
+    const totalParticipants = completedEvents.reduce((acc, e) => acc + e.participantCount, 0);
+
+    const summaryText = [
+      `【透明化簡易レポート（${periodLabel}）】`,
+      `カレンダー実施済み活動: ${completedEvents.length}件（予定含む計${orgEvents.length}件・延べ参加${totalParticipants}名）`,
+      `サイト上の活動・交流投稿: ${orgPosts.length}件`,
+      `認証済み専門家からの技術助言: ${expertAdvices.length}件`,
+      input.additionalNote?.trim() ? `補足: ${input.additionalNote.trim()}` : ''
+    ]
+      .filter(Boolean)
+      .join(' ／ ');
+
+    const report: ActivityReportRecord = {
+      id: `rep-${Date.now().toString(36)}-${this.seq++}`,
+      organizationActorId: input.organizationActorId,
+      title,
+      periodLabel,
+      calendarEventCount: completedEvents.length,
+      socialLogCount: orgPosts.length,
+      expertAdviceCount: expertAdvices.length,
+      summaryText,
+      evidenceSnapshot: {
+        completedEventIds: completedEvents.map((e) => e.id),
+        postIds: orgPosts.map((p) => p.id),
+        expertCommentIds: expertAdvices.map((c) => c.id),
+        totalParticipants
+      },
+      createdByAccountId: input.createdByAccountId,
+      createdAt: nowIso
+    };
+    this.activityReports.unshift(report);
+
+    const auditEvent = await this.recordVenueAuditEvent(
+      {
+        actorAccountId: input.createdByAccountId,
+        action: 'organization.report.generate',
+        targetId: report.id,
+        outcome: 'allowed',
+        reasonCode: 'ACTIVITY_REPORT_GENERATED',
+        detailSummary: {
+          organizationActorId: input.organizationActorId,
+          calendarEventCount: report.calendarEventCount,
+          socialLogCount: report.socialLogCount,
+          expertAdviceCount: report.expertAdviceCount
+        }
+      },
+      nowIso
+    );
+
+    return { report: structuredClone(report), auditEvent };
+  }
 }
 
 /**
@@ -1266,7 +1539,9 @@ export class PgVenueFoundationStore implements VenueFoundationStorePort {
       commentRes,
       connRes,
       certRes,
-      auditRes
+      auditRes,
+      calRes,
+      reportRes
     ] = await Promise.all([
         this.pool.query<{ id: string; kind: Actor['kind']; display_name: string; expertise: Actor['expertise'] }>(
           'SELECT id, kind, display_name, expertise FROM simulation.actor ORDER BY id ASC'
@@ -1387,6 +1662,34 @@ export class PgVenueFoundationStore implements VenueFoundationStorePort {
           occurred_at: string;
         }>(
           'SELECT id, actor_account_id, action, target_id, outcome, reason_code, detail_summary, occurred_at::text FROM ops_audit.venue_audit_event ORDER BY occurred_at DESC LIMIT 100'
+        ),
+        this.pool.query<{
+          id: string;
+          organization_actor_id: string;
+          title: string;
+          scheduled_date: string;
+          grid_cell_id: string | null;
+          status: 'planned' | 'completed';
+          participant_count: number;
+          summary: string;
+          created_at: string;
+        }>(
+          'SELECT id, organization_actor_id, title, scheduled_date::text, grid_cell_id, status, participant_count, summary, created_at::text FROM simulation.org_calendar_event ORDER BY scheduled_date DESC, created_at DESC'
+        ),
+        this.pool.query<{
+          id: string;
+          organization_actor_id: string;
+          title: string;
+          period_label: string;
+          calendar_event_count: number;
+          social_log_count: number;
+          expert_advice_count: number;
+          summary_text: string;
+          evidence_snapshot: Record<string, unknown>;
+          created_by_account_id: string;
+          created_at: string;
+        }>(
+          'SELECT id, organization_actor_id, title, period_label, calendar_event_count, social_log_count, expert_advice_count, summary_text, evidence_snapshot, created_by_account_id, created_at::text FROM simulation.activity_report ORDER BY created_at DESC'
         )
       ]);
 
@@ -1496,6 +1799,30 @@ export class PgVenueFoundationStore implements VenueFoundationStorePort {
         reasonCode: r.reason_code,
         detailSummary: r.detail_summary,
         occurredAt: r.occurred_at
+      })),
+      orgCalendarEvents: calRes.rows.map((r) => ({
+        id: r.id,
+        organizationActorId: r.organization_actor_id,
+        title: r.title,
+        scheduledDate: r.scheduled_date.slice(0, 10),
+        gridCellId: r.grid_cell_id,
+        status: r.status,
+        participantCount: r.participant_count,
+        summary: r.summary,
+        createdAt: r.created_at
+      })),
+      activityReports: reportRes.rows.map((r) => ({
+        id: r.id,
+        organizationActorId: r.organization_actor_id,
+        title: r.title,
+        periodLabel: r.period_label,
+        calendarEventCount: r.calendar_event_count,
+        socialLogCount: r.social_log_count,
+        expertAdviceCount: r.expert_advice_count,
+        summaryText: r.summary_text,
+        evidenceSnapshot: r.evidence_snapshot,
+        createdByAccountId: r.created_by_account_id,
+        createdAt: r.created_at
       }))
     };
   }
@@ -2605,5 +2932,288 @@ export class PgVenueFoundationStore implements VenueFoundationStorePort {
     }
 
     return { ok: true, auditEvent, notificationSent: false };
+  }
+
+  async createOrgCalendarEvent(
+    input: CreateOrgCalendarEventInput,
+    nowIso = new Date().toISOString()
+  ): Promise<OrgCalendarEventRecord> {
+    await this.ensureSeeded();
+    const title = input.title.trim();
+    if (!title) throw new Error('活動タイトルを入力してください。');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.scheduledDate.trim())) {
+      throw new Error('活動日は YYYY-MM-DD 形式で入力してください。');
+    }
+    let gridCellId = input.gridCellId?.trim() ?? '';
+    if (!gridCellId) {
+      const p = await this.pool.query<{ grid_cell_id: string | null }>(
+        'SELECT grid_cell_id FROM simulation.venue_profile WHERE actor_id = $1',
+        [input.organizationActorId]
+      );
+      gridCellId = p.rows[0]?.grid_cell_id || 'grid-r1-c2';
+    }
+    resolveGridCellCoordinates(gridCellId);
+    const participantCount = Math.max(0, Math.trunc(Number(input.participantCount ?? 0) || 0));
+    const status = input.status === 'completed' ? 'completed' : 'planned';
+    const summary = input.summary?.trim() ?? '';
+    const id = `cal-${Date.now().toString(36)}-${generateSessionToken().slice(0, 6)}`;
+
+    await this.pool.query(
+      `INSERT INTO simulation.org_calendar_event
+         (id, organization_actor_id, title, scheduled_date, grid_cell_id, status, participant_count, summary, created_at)
+       VALUES ($1,$2,$3,$4::date,$5,$6,$7,$8,$9::timestamptz)`,
+      [id, input.organizationActorId, title, input.scheduledDate.trim(), gridCellId, status, participantCount, summary, nowIso]
+    );
+
+    return {
+      id,
+      organizationActorId: input.organizationActorId,
+      title,
+      scheduledDate: input.scheduledDate.trim(),
+      gridCellId,
+      status,
+      participantCount,
+      summary,
+      createdAt: nowIso
+    };
+  }
+
+  async updateOrgCalendarEventStatus(
+    eventId: string,
+    organizationActorId: string,
+    status: 'planned' | 'completed'
+  ): Promise<OrgCalendarEventRecord> {
+    await this.ensureSeeded();
+    const res = await this.pool.query<{
+      id: string;
+      organization_actor_id: string;
+      title: string;
+      scheduled_date: string;
+      grid_cell_id: string | null;
+      status: 'planned' | 'completed';
+      participant_count: number;
+      summary: string;
+      created_at: string;
+    }>(
+      `UPDATE simulation.org_calendar_event
+       SET status = $3
+       WHERE id = $1 AND organization_actor_id = $2
+       RETURNING id, organization_actor_id, title, scheduled_date::text, grid_cell_id, status, participant_count, summary, created_at::text`,
+      [eventId, organizationActorId, status]
+    );
+    const r = res.rows[0];
+    if (!r) throw new Error('対象のカレンダー活動が見つかりません。');
+    return {
+      id: r.id,
+      organizationActorId: r.organization_actor_id,
+      title: r.title,
+      scheduledDate: r.scheduled_date.slice(0, 10),
+      gridCellId: r.grid_cell_id,
+      status: r.status,
+      participantCount: r.participant_count,
+      summary: r.summary,
+      createdAt: r.created_at
+    };
+  }
+
+  async addDummyOrgMember(
+    input: AddDummyOrgMemberInput,
+    nowIso = new Date().toISOString()
+  ): Promise<{ actor: Actor; membership: SeedDummyMembership }> {
+    await this.ensureSeeded();
+    const rawName = input.displayName.trim();
+    if (!rawName) throw new Error('ダミーメンバー名を入力してください。');
+    const displayName = rawName.startsWith('【ダミー団員】') ? rawName : `【ダミー団員】${rawName}`;
+    const actorId = `sim-kyushu-dummy-mem-${Date.now().toString(36)}-${generateSessionToken().slice(0, 6)}`;
+    const expertise = input.roleNote?.trim() ? [{ label: input.roleNote.trim(), evidence: null }] : [];
+
+    const tx = await this.pool.connect();
+    try {
+      await tx.query('BEGIN');
+      await tx.query(
+        `INSERT INTO simulation.actor (id, kind, display_name, expertise)
+         VALUES ($1,'person',$2,$3::jsonb)`,
+        [actorId, displayName, JSON.stringify(expertise)]
+      );
+      await tx.query(
+        `INSERT INTO simulation.venue_profile
+           (actor_id, grid_cell_id, interest_tags, strength_tags, bio, seeking_match, org_certification_status, expert_certified, updated_at)
+         VALUES ($1,'grid-r1-c2','[]'::jsonb,'[]'::jsonb,'ダミー登録メンバー（デモ中は操作対象外・ログイン不可）',false,'none',false,$2::timestamptz)`,
+        [actorId, nowIso]
+      );
+      await tx.query(
+        `INSERT INTO simulation.actor_membership
+           (person_actor_id, organization_actor_id, role, is_dummy, certified_by_account_id, certified_at)
+         VALUES ($1,$2,'member',true,NULL,NULL)`,
+        [actorId, input.organizationActorId]
+      );
+      await tx.query('COMMIT');
+    } catch (err) {
+      await tx.query('ROLLBACK');
+      throw err;
+    } finally {
+      tx.release();
+    }
+
+    return {
+      actor: { id: actorId, domain: 'simulation', kind: 'person', displayName, expertise },
+      membership: {
+        personActorId: actorId,
+        organizationActorId: input.organizationActorId,
+        role: 'member',
+        isDummy: true,
+        certifiedByAccountId: null,
+        certifiedAt: null
+      }
+    };
+  }
+
+  async listOrgChatMessages(organizationActorId: string): Promise<readonly OrgChatMessageRecord[]> {
+    await this.ensureSeeded();
+    const res = await this.pool.query<{
+      id: string;
+      organization_actor_id: string;
+      sender_account_id: string;
+      sender_display_name: string;
+      body: string;
+      created_at: string;
+    }>(
+      `SELECT id, organization_actor_id, sender_account_id, sender_display_name, body, created_at::text
+       FROM simulation.org_chat_message
+       WHERE organization_actor_id = $1
+       ORDER BY created_at ASC`,
+      [organizationActorId]
+    );
+    return res.rows.map((r) => ({
+      id: r.id,
+      organizationActorId: r.organization_actor_id,
+      senderAccountId: r.sender_account_id,
+      senderDisplayName: r.sender_display_name,
+      body: r.body,
+      createdAt: r.created_at
+    }));
+  }
+
+  async postOrgChatMessage(
+    input: PostOrgChatMessageInput,
+    nowIso = new Date().toISOString()
+  ): Promise<OrgChatMessageRecord> {
+    await this.ensureSeeded();
+    const body = input.body.trim();
+    if (!body) throw new Error('チャットメッセージを入力してください。');
+    const id = `chat-${Date.now().toString(36)}-${generateSessionToken().slice(0, 6)}`;
+    await this.pool.query(
+      `INSERT INTO simulation.org_chat_message
+         (id, organization_actor_id, sender_account_id, sender_display_name, body, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6::timestamptz)`,
+      [id, input.organizationActorId, input.senderAccountId, input.senderDisplayName, body, nowIso]
+    );
+    return {
+      id,
+      organizationActorId: input.organizationActorId,
+      senderAccountId: input.senderAccountId,
+      senderDisplayName: input.senderDisplayName,
+      body,
+      createdAt: nowIso
+    };
+  }
+
+  async generateActivityReport(
+    input: GenerateActivityReportInput,
+    nowIso = new Date().toISOString()
+  ): Promise<{ report: ActivityReportRecord; auditEvent: VenueAuditEventRecord }> {
+    await this.ensureSeeded();
+    const title = input.title.trim() || '活動実績 簡易透明化レポート';
+    const periodLabel = input.periodLabel.trim() || '2026年度 実証期間';
+
+    const [calRes, postRes, advRes] = await Promise.all([
+      this.pool.query<{ id: string; status: string; participant_count: number }>(
+        'SELECT id, status, participant_count FROM simulation.org_calendar_event WHERE organization_actor_id = $1',
+        [input.organizationActorId]
+      ),
+      this.pool.query<{ id: string }>(
+        'SELECT id FROM simulation.social_post WHERE author_actor_id = $1',
+        [input.organizationActorId]
+      ),
+      this.pool.query<{ id: string }>(
+        `SELECT c.id FROM simulation.social_comment c
+         JOIN simulation.social_post p ON p.id = c.post_id
+         WHERE p.author_actor_id = $1 AND c.is_expert_advice = true`,
+        [input.organizationActorId]
+      )
+    ]);
+
+    const completedEvents = calRes.rows.filter((e) => e.status === 'completed');
+    const totalParticipants = completedEvents.reduce((acc, e) => acc + e.participant_count, 0);
+    const summaryText = [
+      `【透明化簡易レポート（${periodLabel}）】`,
+      `カレンダー実施済み活動: ${completedEvents.length}件（予定含む計${calRes.rows.length}件・延べ参加${totalParticipants}名）`,
+      `サイト上の活動・交流投稿: ${postRes.rows.length}件`,
+      `認証済み専門家からの技術助言: ${advRes.rows.length}件`,
+      input.additionalNote?.trim() ? `補足: ${input.additionalNote.trim()}` : ''
+    ]
+      .filter(Boolean)
+      .join(' ／ ');
+
+    const evidenceSnapshot = {
+      completedEventIds: completedEvents.map((e) => e.id),
+      postIds: postRes.rows.map((p) => p.id),
+      expertCommentIds: advRes.rows.map((c) => c.id),
+      totalParticipants
+    };
+
+    const id = `rep-${Date.now().toString(36)}-${generateSessionToken().slice(0, 6)}`;
+    await this.pool.query(
+      `INSERT INTO simulation.activity_report
+         (id, organization_actor_id, title, period_label, calendar_event_count, social_log_count, expert_advice_count,
+          summary_text, evidence_snapshot, created_by_account_id, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11::timestamptz)`,
+      [
+        id,
+        input.organizationActorId,
+        title,
+        periodLabel,
+        completedEvents.length,
+        postRes.rows.length,
+        advRes.rows.length,
+        summaryText,
+        JSON.stringify(evidenceSnapshot),
+        input.createdByAccountId,
+        nowIso
+      ]
+    );
+
+    const report: ActivityReportRecord = {
+      id,
+      organizationActorId: input.organizationActorId,
+      title,
+      periodLabel,
+      calendarEventCount: completedEvents.length,
+      socialLogCount: postRes.rows.length,
+      expertAdviceCount: advRes.rows.length,
+      summaryText,
+      evidenceSnapshot,
+      createdByAccountId: input.createdByAccountId,
+      createdAt: nowIso
+    };
+
+    const auditEvent = await this.recordVenueAuditEvent(
+      {
+        actorAccountId: input.createdByAccountId,
+        action: 'organization.report.generate',
+        targetId: id,
+        outcome: 'allowed',
+        reasonCode: 'ACTIVITY_REPORT_GENERATED',
+        detailSummary: {
+          organizationActorId: input.organizationActorId,
+          calendarEventCount: report.calendarEventCount,
+          socialLogCount: report.socialLogCount,
+          expertAdviceCount: report.expertAdviceCount
+        }
+      },
+      nowIso
+    );
+
+    return { report, auditEvent };
   }
 }

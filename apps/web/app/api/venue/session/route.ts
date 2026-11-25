@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { toPublicVenueProfile } from '@satoyama/domain';
+import { checkCertifiedOrganizationAccess, toPublicVenueProfile } from '@satoyama/domain';
 import { getActiveVenueFoundationStore } from '../../../../lib/venue-runtime';
 import { extractSessionTokenFromCookieHeader } from '../../../../lib/venue-session';
 
@@ -15,6 +15,13 @@ export async function GET(request: Request) {
       ? await store.listNotificationsForActor(resolved.account.actorId)
       : [];
 
+  // Private org chat is returned ONLY when server verifies certified org leader access
+  const orgAccess = checkCertifiedOrganizationAccess(resolved.authContext, resolved.profile);
+  const orgChatMessages =
+    orgAccess.ok && resolved.account
+      ? await store.listOrgChatMessages(resolved.account.actorId)
+      : [];
+
   return NextResponse.json({
     authenticated: resolved.authenticated,
     mode: resolved.session?.mode ?? null,
@@ -28,6 +35,7 @@ export async function GET(request: Request) {
         }
       : null,
     notifications,
+    orgChatMessages,
     snapshot,
     serverTimestamp: new Date().toISOString()
   });

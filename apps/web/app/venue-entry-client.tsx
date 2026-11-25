@@ -10,6 +10,7 @@ import {
   type VenueTag
 } from '@satoyama/domain';
 import type {
+  OrgChatMessageRecord,
   VenueFoundationSnapshot,
   VenueNotificationRecord
 } from '../../../db/venue-store';
@@ -17,6 +18,7 @@ import { KyushuGridPicker } from './components/kyushu-grid-picker';
 import { VenueSocialHub } from './components/venue-social-hub';
 import { VenueCertificationBanner } from './components/venue-certification-banner';
 import { VenueOperatorPanel } from './components/venue-operator-panel';
+import { VenueOrganizationPanel } from './components/venue-organization-panel';
 
 export interface InitialVenuePageData {
   authenticated: boolean;
@@ -29,6 +31,7 @@ export interface InitialVenuePageData {
     operatedActorIds: readonly string[];
   } | null;
   notifications: readonly VenueNotificationRecord[];
+  orgChatMessages: readonly OrgChatMessageRecord[];
   snapshot: VenueFoundationSnapshot;
   serverTimestamp: string;
 }
@@ -495,6 +498,19 @@ export function VenueEntryClient({ initialData }: { initialData: InitialVenuePag
               onRefresh={refreshSession}
               onFeedback={setFeedback}
             />
+
+            {/* Certified Organization Workspace (Calendar / Dummy Members / Private Chat / Reports) */}
+            {data.account.roleTrack === 'organization' && (
+              <VenueOrganizationPanel
+                account={data.account}
+                publicProfile={data.publicProfile}
+                orgChatMessages={data.orgChatMessages ?? []}
+                snapshot={data.snapshot}
+                busy={busy}
+                onRefresh={refreshSession}
+                onFeedback={setFeedback}
+              />
+            )}
 
             {/* Operator-only governance & mediated strict-review panel */}
             {data.account.roleTrack === 'operator' && (

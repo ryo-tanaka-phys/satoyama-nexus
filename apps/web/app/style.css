@@ -916,3 +916,11 @@ code {
   flex-direction: column;
   gap: 16px;
 }
+
+
+/* === P5 Certified Organization Workspace === */
+.org-workspace-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
