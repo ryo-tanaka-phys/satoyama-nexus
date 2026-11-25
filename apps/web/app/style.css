@@ -908,3 +908,11 @@ code {
   font-size: 0.88rem;
   margin: 6px 0;
 }
+
+
+/* === P4 Operator Governance Panel === */
+.operator-panel-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}

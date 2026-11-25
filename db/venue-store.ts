@@ -6,6 +6,7 @@ import {
   resolveGridCellCoordinates,
   resolveVenueServerAuthContext,
   toPublicVenueProfile,
+  toStructuredVenueMatchingInput,
   validateVenueTags,
   type Actor,
   type CorporateSponsorRecord,
@@ -95,6 +96,49 @@ export interface VenueNotificationRecord {
   createdAt: string;
 }
 
+export type CertificationKind = 'organization' | 'expert';
+export type CertificationStatus = 'pending' | 'approved' | 'rejected';
+
+export interface CertificationRequestRecord {
+  id: string;
+  kind: CertificationKind;
+  applicantAccountId: string;
+  targetActorId: string;
+  organizationName: string | null;
+  summary: string;
+  evidenceNote: string | null;
+  status: CertificationStatus;
+  reviewerAccountId: string | null;
+  reviewReason: string | null;
+  reviewedAt: string | null;
+  createdAt: string;
+}
+
+export interface VenueAuditEventRecord {
+  id: string;
+  actorAccountId: string | null;
+  action: string;
+  targetId: string;
+  outcome: 'allowed' | 'denied';
+  reasonCode: string;
+  detailSummary: Readonly<Record<string, unknown>>;
+  occurredAt: string;
+}
+
+export interface MediatedAIPrimaryAssessment {
+  recommendationId: string;
+  citizenActorId: string;
+  targetOrgActorId: string;
+  distanceMeters: number | null;
+  matchedTags: readonly VenueTag[];
+  triageSignal: 'recommended-for-human-review' | 'caution-human-review' | 'insufficient-evidence-for-review';
+  status: 'requires-human-review';
+  externalApiCalled: false;
+  rationale: string;
+  requiredHumanChecks: readonly string[];
+  generatedAt: string;
+}
+
 export interface VenueFoundationSnapshot {
   actors: readonly Actor[];
   publicProfiles: readonly PublicVenueProfileView[];
@@ -105,6 +149,41 @@ export interface VenueFoundationSnapshot {
   initialPosts: readonly SeedSocialPost[];
   comments: readonly SocialCommentRecord[];
   activeConnections: readonly ActiveConnectionRecord[];
+  certificationRequests: readonly CertificationRequestRecord[];
+  auditEvents: readonly VenueAuditEventRecord[];
+}
+
+export interface SubmitCertificationRequestInput {
+  kind: CertificationKind;
+  applicantAccountId: string;
+  targetActorId: string;
+  organizationName?: string | null;
+  summary: string;
+  evidenceNote?: string | null;
+}
+
+export interface ReviewCertificationRequestInput {
+  requestId: string;
+  reviewerAccountId: string;
+  reviewerOperatedActorIds: readonly string[];
+  decision: 'approved' | 'rejected';
+  reason: string;
+}
+
+export interface RunMediatedAIReviewInput {
+  operatorAccountId: string;
+  citizenActorId: string;
+  targetOrgActorId: string;
+}
+
+export interface SubmitMediatedHumanReviewInput {
+  reviewerAccountId: string;
+  reviewerOperatedActorIds: readonly string[];
+  citizenActorId: string;
+  targetOrgActorId: string;
+  recommendationId: string | null;
+  decision: 'approved' | 'rejected';
+  reason: string;
 }
 
 export interface CreateSocialPostInput {
@@ -155,6 +234,97 @@ export interface VenueFoundationStorePort {
   updateOwnProfile(input: UpdateOwnProfileInput, nowIso?: string): Promise<VenueProfileRecord>;
   listNotificationsForActor(actorId: string): Promise<readonly VenueNotificationRecord[]>;
   markNotificationRead(notificationId: string, recipientActorId: string): Promise<boolean>;
+  submitCertificationRequest(
+    input: SubmitCertificationRequestInput,
+    nowIso?: string
+  ): Promise<CertificationRequestRecord>;
+  reviewCertificationRequest(
+    input: ReviewCertificationRequestInput,
+    nowIso?: string
+  ): Promise<
+    | { ok: true; request: CertificationRequestRecord; auditEvent: VenueAuditEventRecord }
+    | { ok: false; reasonCode: string; message: string; auditEvent: VenueAuditEventRecord }
+  >;
+  runMediatedAIPrimaryReview(
+    input: RunMediatedAIReviewInput,
+    nowIso?: string
+  ): Promise<{ assessment: MediatedAIPrimaryAssessment; auditEvent: VenueAuditEventRecord }>;
+  submitMediatedHumanReview(
+    input: SubmitMediatedHumanReviewInput,
+    nowIso?: string
+  ): Promise<
+    | { ok: true; auditEvent: VenueAuditEventRecord; notificationSent: boolean }
+    | { ok: false; reasonCode: string; message: string; auditEvent: VenueAuditEventRecord }
+  >;
+  recordVenueAuditEvent(
+    input: Omit<VenueAuditEventRecord, 'id' | 'occurredAt'>,
+    nowIso?: string
+  ): Promise<VenueAuditEventRecord>;
+}
+
+function haversineDistanceMeters(
+  a: { latitude: number; longitude: number } | null,
+  b: { latitude: number; longitude: number } | null
+): number | null {
+  if (!a || !b) return null;
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const R = 6371000;
+  const dLat = toRad(b.latitude - a.latitude);
+  const dLng = toRad(b.longitude - a.longitude);
+  const lat1 = toRad(a.latitude);
+  const lat2 = toRad(b.latitude);
+  const sinDLat = Math.sin(dLat / 2);
+  const sinDLng = Math.sin(dLng / 2);
+  const h = sinDLat * sinDLat + Math.cos(lat1) * Math.cos(lat2) * sinDLng * sinDLng;
+  return Math.round(2 * R * Math.asin(Math.min(1, Math.sqrt(h))));
+}
+
+function buildMediatedAIAssessment(
+  citizenProfile: VenueProfileRecord,
+  orgProfile: VenueProfileRecord,
+  recommendationId: string,
+  nowIso: string
+): MediatedAIPrimaryAssessment {
+  // Strictly uses structured matching projection ONLY (bio, ageInternal, genderInternal excluded)
+  const citizenStruct = toStructuredVenueMatchingInput(citizenProfile);
+  const orgStruct = toStructuredVenueMatchingInput(orgProfile);
+
+  const distanceMeters = haversineDistanceMeters(citizenStruct.baseCoordinates, orgStruct.baseCoordinates);
+  const matchedTags = citizenStruct.structuredTags.filter((t) => orgStruct.structuredTags.includes(t));
+
+  let triageSignal: MediatedAIPrimaryAssessment['triageSignal'] = 'caution-human-review';
+  if (orgProfile.orgCertificationStatus !== 'certified' || distanceMeters === null) {
+    triageSignal = 'insufficient-evidence-for-review';
+  } else if (matchedTags.length >= 1 && distanceMeters <= 6000) {
+    triageSignal = 'recommended-for-human-review';
+  }
+
+  const requiredHumanChecks: string[] = [
+    '距離のみで参加可能と断定せず、交通手段・日程の適合性を人間の二次審査で確認すること'
+  ];
+  if (orgProfile.orgCertificationStatus !== 'certified') {
+    requiredHumanChecks.push('対象団体が未認証のため、公式サポート対象とする前に団体認証を確認すること');
+  }
+  if (matchedTags.length === 0) {
+    requiredHumanChecks.push('構造化タグの一致がないため、初心者の受入体制を人間が確認すること');
+  }
+
+  const distText = distanceMeters !== null ? `直線距離 約${(distanceMeters / 1000).toFixed(2)}km` : '座標未設定';
+  const tagText = matchedTags.length > 0 ? `一致タグ: ${matchedTags.join('・')}` : '一致タグなし';
+
+  return {
+    recommendationId,
+    citizenActorId: citizenProfile.actorId,
+    targetOrgActorId: orgProfile.actorId,
+    distanceMeters,
+    matchedTags,
+    triageSignal,
+    status: 'requires-human-review',
+    externalApiCalled: false,
+    rationale: `【AI一次評価（自己紹介テキスト非入力・構造化データのみ）】${distText}／${tagText}。最終判断は運営者の人間二次審査に委ねます。`,
+    requiredHumanChecks,
+    generatedAt: nowIso
+  };
 }
 
 function actorKindForRoleTrack(roleTrack: VenueRoleTrack): Actor['kind'] {
@@ -197,6 +367,8 @@ export class InMemoryVenueFoundationStore implements VenueFoundationStorePort {
   private comments: SocialCommentRecord[] = [];
   private activeConnections: ActiveConnectionRecord[] = [];
   private notifications: VenueNotificationRecord[] = [];
+  private certificationRequests: CertificationRequestRecord[] = [];
+  private auditEvents: VenueAuditEventRecord[] = [];
   private seq = 1;
 
   async ensureSeeded(): Promise<void> {
@@ -223,7 +395,9 @@ export class InMemoryVenueFoundationStore implements VenueFoundationStorePort {
       memberships: structuredClone(this.memberships),
       initialPosts: structuredClone(this.initialPosts),
       comments: structuredClone(this.comments),
-      activeConnections: structuredClone(this.activeConnections)
+      activeConnections: structuredClone(this.activeConnections),
+      certificationRequests: structuredClone(this.certificationRequests),
+      auditEvents: structuredClone(this.auditEvents)
     };
   }
 
@@ -502,6 +676,401 @@ export class InMemoryVenueFoundationStore implements VenueFoundationStorePort {
     target.isRead = true;
     return true;
   }
+
+  async recordVenueAuditEvent(
+    input: Omit<VenueAuditEventRecord, 'id' | 'occurredAt'>,
+    nowIso = new Date().toISOString()
+  ): Promise<VenueAuditEventRecord> {
+    await this.ensureSeeded();
+    const ev: VenueAuditEventRecord = {
+      id: `vaudit-${Date.now().toString(36)}-${this.seq++}`,
+      actorAccountId: input.actorAccountId,
+      action: input.action,
+      targetId: input.targetId,
+      outcome: input.outcome,
+      reasonCode: input.reasonCode,
+      detailSummary: structuredClone(input.detailSummary),
+      occurredAt: nowIso
+    };
+    this.auditEvents.unshift(ev);
+    return structuredClone(ev);
+  }
+
+  async submitCertificationRequest(
+    input: SubmitCertificationRequestInput,
+    nowIso = new Date().toISOString()
+  ): Promise<CertificationRequestRecord> {
+    await this.ensureSeeded();
+    const summary = input.summary.trim();
+    if (!summary) throw new Error('申請内容・理由を入力してください。');
+    const targetActor = this.actors.find((a) => a.id === input.targetActorId);
+    const targetProfile = this.profiles.get(input.targetActorId);
+    if (!targetActor || !targetProfile) throw new Error('対象アカウントが見つかりません。');
+
+    if (input.kind === 'organization' && targetActor.kind !== 'organization') {
+      throw new Error('市民団体認証は市民団体アカウントのみ申請できます。');
+    }
+    if (input.kind === 'expert' && targetActor.kind !== 'person') {
+      throw new Error('専門家資格認証は一般市民（個人）枠アカウントのみ申請できます。');
+    }
+
+    const req: CertificationRequestRecord = {
+      id: `cert-${Date.now().toString(36)}-${this.seq++}`,
+      kind: input.kind,
+      applicantAccountId: input.applicantAccountId,
+      targetActorId: input.targetActorId,
+      organizationName: input.kind === 'organization' ? (input.organizationName?.trim() || targetActor.displayName) : null,
+      summary,
+      evidenceNote: input.evidenceNote?.trim() || null,
+      status: 'pending',
+      reviewerAccountId: null,
+      reviewReason: null,
+      reviewedAt: null,
+      createdAt: nowIso
+    };
+    this.certificationRequests.unshift(req);
+
+    if (input.kind === 'organization') {
+      targetProfile.orgCertificationStatus = 'pending';
+      targetProfile.updatedAt = nowIso;
+    }
+
+    // Notify operator accounts
+    for (const acct of this.accounts.values()) {
+      if (acct.roleTrack === 'operator' && acct.revokedAt === null) {
+        this.notifications.unshift({
+          id: `notif-${Date.now().toString(36)}-${this.seq++}`,
+          recipientActorId: acct.actorId,
+          category: 'certification',
+          title:
+            input.kind === 'organization'
+              ? `【団体認証申請】${targetActor.displayName} から法人格・責任者認証の申請`
+              : `【専門家資格認証申請】${targetActor.displayName} から資格認証の申請`,
+          body: summary,
+          referenceId: req.id,
+          isRead: false,
+          createdAt: nowIso
+        });
+      }
+    }
+
+    await this.recordVenueAuditEvent(
+      {
+        actorAccountId: input.applicantAccountId,
+        action: `certification.${input.kind}.submit`,
+        targetId: req.id,
+        outcome: 'allowed',
+        reasonCode: 'SUBMITTED',
+        detailSummary: { targetActorId: input.targetActorId, kind: input.kind }
+      },
+      nowIso
+    );
+
+    return structuredClone(req);
+  }
+
+  async reviewCertificationRequest(
+    input: ReviewCertificationRequestInput,
+    nowIso = new Date().toISOString()
+  ): Promise<
+    | { ok: true; request: CertificationRequestRecord; auditEvent: VenueAuditEventRecord }
+    | { ok: false; reasonCode: string; message: string; auditEvent: VenueAuditEventRecord }
+  > {
+    await this.ensureSeeded();
+    const reason = input.reason.trim();
+    if (!reason) {
+      const auditEvent = await this.recordVenueAuditEvent(
+        {
+          actorAccountId: input.reviewerAccountId,
+          action: 'certification.review',
+          targetId: input.requestId,
+          outcome: 'denied',
+          reasonCode: 'REVIEW_REASON_REQUIRED',
+          detailSummary: { decision: input.decision }
+        },
+        nowIso
+      );
+      return { ok: false, reasonCode: 'REVIEW_REASON_REQUIRED', message: '審査理由を入力してください。', auditEvent };
+    }
+
+    const req = this.certificationRequests.find((r) => r.id === input.requestId);
+    if (!req) {
+      const auditEvent = await this.recordVenueAuditEvent(
+        {
+          actorAccountId: input.reviewerAccountId,
+          action: 'certification.review',
+          targetId: input.requestId,
+          outcome: 'denied',
+          reasonCode: 'CERTIFICATION_REQUEST_NOT_FOUND',
+          detailSummary: {}
+        },
+        nowIso
+      );
+      return { ok: false, reasonCode: 'CERTIFICATION_REQUEST_NOT_FOUND', message: '対象の認証申請が見つかりません。', auditEvent };
+    }
+
+    // ADR 0002 self-review prohibition
+    if (
+      req.applicantAccountId === input.reviewerAccountId ||
+      input.reviewerOperatedActorIds.includes(req.targetActorId)
+    ) {
+      const auditEvent = await this.recordVenueAuditEvent(
+        {
+          actorAccountId: input.reviewerAccountId,
+          action: `certification.${req.kind}.review`,
+          targetId: req.id,
+          outcome: 'denied',
+          reasonCode: 'SELF_REVIEW_PROHIBITED',
+          detailSummary: { applicantAccountId: req.applicantAccountId, targetActorId: req.targetActorId }
+        },
+        nowIso
+      );
+      return {
+        ok: false,
+        reasonCode: 'SELF_REVIEW_PROHIBITED',
+        message: '自己審査は禁止されています。申請者とは独立した運営審査担当が審査してください。',
+        auditEvent
+      };
+    }
+
+    req.status = input.decision;
+    req.reviewerAccountId = input.reviewerAccountId;
+    req.reviewReason = reason;
+    req.reviewedAt = nowIso;
+
+    const targetProfile = this.profiles.get(req.targetActorId);
+    if (targetProfile) {
+      if (req.kind === 'organization') {
+        targetProfile.orgCertificationStatus = input.decision === 'approved' ? 'certified' : 'rejected';
+        if (input.decision === 'approved') {
+          const applicantAcct = this.accounts.get(req.applicantAccountId);
+          if (applicantAcct && !applicantAcct.operatedActorIds.includes(req.targetActorId)) {
+            applicantAcct.operatedActorIds = [...applicantAcct.operatedActorIds, req.targetActorId];
+          }
+          // Record leader certification membership
+          const existsLeader = this.memberships.some(
+            (m) => m.personActorId === req.targetActorId && m.organizationActorId === req.targetActorId
+          );
+          if (!existsLeader) {
+            this.memberships.push({
+              personActorId: req.targetActorId,
+              organizationActorId: req.targetActorId,
+              role: 'leader',
+              isDummy: false,
+              certifiedByAccountId: input.reviewerAccountId,
+              certifiedAt: nowIso
+            });
+          }
+        }
+      } else {
+        targetProfile.expertCertified = input.decision === 'approved';
+        targetProfile.expertCertificationNote = input.decision === 'approved' ? reason : null;
+      }
+      targetProfile.updatedAt = nowIso;
+    }
+
+    this.notifications.unshift({
+      id: `notif-${Date.now().toString(36)}-${this.seq++}`,
+      recipientActorId: req.targetActorId,
+      category: 'certification',
+      title:
+        req.kind === 'organization'
+          ? input.decision === 'approved'
+            ? '【団体認証完了】市民団体認証・責任者権限が承認されました'
+            : '【団体認証見送り】市民団体認証が却下されました'
+          : input.decision === 'approved'
+            ? '【専門家資格認証完了】認証済み専門家バッジが付与されました'
+            : '【専門家資格認証見送り】資格認証が却下されました',
+      body: `運営審査理由：${reason}`,
+      referenceId: req.id,
+      isRead: false,
+      createdAt: nowIso
+    });
+
+    const auditEvent = await this.recordVenueAuditEvent(
+      {
+        actorAccountId: input.reviewerAccountId,
+        action: `certification.${req.kind}.review`,
+        targetId: req.id,
+        outcome: 'allowed',
+        reasonCode: input.decision === 'approved' ? 'CERTIFICATION_APPROVED' : 'CERTIFICATION_REJECTED',
+        detailSummary: {
+          kind: req.kind,
+          targetActorId: req.targetActorId,
+          decision: input.decision,
+          reason
+        }
+      },
+      nowIso
+    );
+
+    return { ok: true, request: structuredClone(req), auditEvent };
+  }
+
+  async runMediatedAIPrimaryReview(
+    input: RunMediatedAIReviewInput,
+    nowIso = new Date().toISOString()
+  ): Promise<{ assessment: MediatedAIPrimaryAssessment; auditEvent: VenueAuditEventRecord }> {
+    await this.ensureSeeded();
+    const citizenProfile = this.profiles.get(input.citizenActorId);
+    const orgProfile = this.profiles.get(input.targetOrgActorId);
+    if (!citizenProfile || !orgProfile) {
+      throw new Error('対象の市民または団体プロフィールが見つかりません。');
+    }
+
+    const recId = `med-ai-${Date.now().toString(36)}-${this.seq++}`;
+    const assessment = buildMediatedAIAssessment(citizenProfile, orgProfile, recId, nowIso);
+
+    const auditEvent = await this.recordVenueAuditEvent(
+      {
+        actorAccountId: input.operatorAccountId,
+        action: 'mediated-match.ai-review',
+        targetId: recId,
+        outcome: 'allowed',
+        reasonCode: 'AI_PRIMARY_RECORDED',
+        detailSummary: {
+          recommendationId: recId,
+          citizenActorId: assessment.citizenActorId,
+          targetOrgActorId: assessment.targetOrgActorId,
+          distanceMeters: assessment.distanceMeters,
+          matchedTags: assessment.matchedTags,
+          triageSignal: assessment.triageSignal,
+          status: assessment.status,
+          externalApiCalled: false,
+          rationale: assessment.rationale
+        }
+      },
+      nowIso
+    );
+
+    return { assessment, auditEvent };
+  }
+
+  async submitMediatedHumanReview(
+    input: SubmitMediatedHumanReviewInput,
+    nowIso = new Date().toISOString()
+  ): Promise<
+    | { ok: true; auditEvent: VenueAuditEventRecord; notificationSent: boolean }
+    | { ok: false; reasonCode: string; message: string; auditEvent: VenueAuditEventRecord }
+  > {
+    await this.ensureSeeded();
+    const reason = input.reason.trim();
+    if (!reason) {
+      const auditEvent = await this.recordVenueAuditEvent(
+        {
+          actorAccountId: input.reviewerAccountId,
+          action: 'mediated-match.human-review',
+          targetId: `${input.citizenActorId}:${input.targetOrgActorId}`,
+          outcome: 'denied',
+          reasonCode: 'REVIEW_REASON_REQUIRED',
+          detailSummary: {}
+        },
+        nowIso
+      );
+      return { ok: false, reasonCode: 'REVIEW_REASON_REQUIRED', message: '人間二次審査の理由を入力してください。', auditEvent };
+    }
+
+    // Self-review prohibition
+    if (
+      input.reviewerOperatedActorIds.includes(input.citizenActorId) ||
+      input.reviewerOperatedActorIds.includes(input.targetOrgActorId)
+    ) {
+      const auditEvent = await this.recordVenueAuditEvent(
+        {
+          actorAccountId: input.reviewerAccountId,
+          action: 'mediated-match.human-review',
+          targetId: `${input.citizenActorId}:${input.targetOrgActorId}`,
+          outcome: 'denied',
+          reasonCode: 'SELF_REVIEW_PROHIBITED',
+          detailSummary: { citizenActorId: input.citizenActorId, targetOrgActorId: input.targetOrgActorId }
+        },
+        nowIso
+      );
+      return {
+        ok: false,
+        reasonCode: 'SELF_REVIEW_PROHIBITED',
+        message: '当事者を操作するアカウントによる自己審査は禁止されています。',
+        auditEvent
+      };
+    }
+
+    // Requirement 4: AI primary evaluation MUST exist before human secondary review
+    const recId = input.recommendationId?.trim() ?? '';
+    const matchingAiEvent = this.auditEvents.find(
+      (ev) =>
+        ev.action === 'mediated-match.ai-review' &&
+        ev.outcome === 'allowed' &&
+        ev.targetId === recId &&
+        ev.detailSummary.citizenActorId === input.citizenActorId &&
+        ev.detailSummary.targetOrgActorId === input.targetOrgActorId
+    );
+    if (!recId || !matchingAiEvent) {
+      const auditEvent = await this.recordVenueAuditEvent(
+        {
+          actorAccountId: input.reviewerAccountId,
+          action: 'mediated-match.human-review',
+          targetId: `${input.citizenActorId}:${input.targetOrgActorId}`,
+          outcome: 'denied',
+          reasonCode: 'AI_RECOMMENDATION_REQUIRED',
+          detailSummary: { recommendationId: recId || null }
+        },
+        nowIso
+      );
+      return {
+        ok: false,
+        reasonCode: 'AI_RECOMMENDATION_REQUIRED',
+        message: '要件4により、先にAI一次評価を実行して推薦IDを参照しない限り人間二次審査を実行できません。',
+        auditEvent
+      };
+    }
+
+    const citizenActor = this.actors.find((a) => a.id === input.citizenActorId);
+    const orgActor = this.actors.find((a) => a.id === input.targetOrgActorId);
+
+    const auditEvent = await this.recordVenueAuditEvent(
+      {
+        actorAccountId: input.reviewerAccountId,
+        action: 'mediated-match.human-review',
+        targetId: recId,
+        outcome: 'allowed',
+        reasonCode: input.decision === 'approved' ? 'MEDIATED_MATCH_APPROVED' : 'MEDIATED_MATCH_REJECTED',
+        detailSummary: {
+          recommendationId: recId,
+          citizenActorId: input.citizenActorId,
+          targetOrgActorId: input.targetOrgActorId,
+          decision: input.decision,
+          reason
+        }
+      },
+      nowIso
+    );
+
+    if (input.decision === 'approved') {
+      this.notifications.unshift({
+        id: `notif-${Date.now().toString(36)}-${this.seq++}`,
+        recipientActorId: input.citizenActorId,
+        category: 'matching',
+        title: `【運営仲介・厳格審査承認】${orgActor?.displayName ?? input.targetOrgActorId} のおすすめ通知`,
+        body: `AI一次評価 (${recId}) と運営者の人間二次審査を経てご案内します。理由：${reason}`,
+        referenceId: recId,
+        isRead: false,
+        createdAt: nowIso
+      });
+      this.notifications.unshift({
+        id: `notif-${Date.now().toString(36)}-${this.seq++}`,
+        recipientActorId: input.targetOrgActorId,
+        category: 'matching',
+        title: `【運営仲介・厳格審査承認】紹介希望の ${citizenActor?.displayName ?? input.citizenActorId} さんをご案内`,
+        body: `AI一次評価 (${recId}) と運営者の人間二次審査を経てマッチング通知を発行しました。理由：${reason}`,
+        referenceId: recId,
+        isRead: false,
+        createdAt: nowIso
+      });
+      return { ok: true, auditEvent, notificationSent: true };
+    }
+
+    return { ok: true, auditEvent, notificationSent: false };
+  }
 }
 
 /**
@@ -686,8 +1255,19 @@ export class PgVenueFoundationStore implements VenueFoundationStorePort {
 
   async getFoundationSnapshot(): Promise<VenueFoundationSnapshot> {
     await this.ensureSeeded();
-    const [actorRes, profileRes, accountRes, sponsorRes, planRes, memRes, postRes, commentRes, connRes] =
-      await Promise.all([
+    const [
+      actorRes,
+      profileRes,
+      accountRes,
+      sponsorRes,
+      planRes,
+      memRes,
+      postRes,
+      commentRes,
+      connRes,
+      certRes,
+      auditRes
+    ] = await Promise.all([
         this.pool.query<{ id: string; kind: Actor['kind']; display_name: string; expertise: Actor['expertise'] }>(
           'SELECT id, kind, display_name, expertise FROM simulation.actor ORDER BY id ASC'
         ),
@@ -779,6 +1359,34 @@ export class PgVenueFoundationStore implements VenueFoundationStorePort {
           created_at: string;
         }>(
           'SELECT id, from_actor_id, to_actor_id, post_id, support_status, note, created_at::text FROM simulation.active_connection ORDER BY created_at DESC'
+        ),
+        this.pool.query<{
+          id: string;
+          kind: CertificationKind;
+          applicant_account_id: string;
+          target_actor_id: string;
+          organization_name: string | null;
+          summary: string;
+          evidence_note: string | null;
+          status: CertificationStatus;
+          reviewer_account_id: string | null;
+          review_reason: string | null;
+          reviewed_at: string | null;
+          created_at: string;
+        }>(
+          'SELECT id, kind, applicant_account_id, target_actor_id, organization_name, summary, evidence_note, status, reviewer_account_id, review_reason, reviewed_at::text, created_at::text FROM simulation.certification_request ORDER BY created_at DESC'
+        ),
+        this.pool.query<{
+          id: string;
+          actor_account_id: string | null;
+          action: string;
+          target_id: string;
+          outcome: 'allowed' | 'denied';
+          reason_code: string;
+          detail_summary: Record<string, unknown>;
+          occurred_at: string;
+        }>(
+          'SELECT id, actor_account_id, action, target_id, outcome, reason_code, detail_summary, occurred_at::text FROM ops_audit.venue_audit_event ORDER BY occurred_at DESC LIMIT 100'
         )
       ]);
 
@@ -864,6 +1472,30 @@ export class PgVenueFoundationStore implements VenueFoundationStorePort {
         supportStatus: r.support_status,
         note: r.note,
         createdAt: r.created_at
+      })),
+      certificationRequests: certRes.rows.map((r) => ({
+        id: r.id,
+        kind: r.kind,
+        applicantAccountId: r.applicant_account_id,
+        targetActorId: r.target_actor_id,
+        organizationName: r.organization_name,
+        summary: r.summary,
+        evidenceNote: r.evidence_note,
+        status: r.status,
+        reviewerAccountId: r.reviewer_account_id,
+        reviewReason: r.review_reason,
+        reviewedAt: r.reviewed_at,
+        createdAt: r.created_at
+      })),
+      auditEvents: auditRes.rows.map((r) => ({
+        id: r.id,
+        actorAccountId: r.actor_account_id,
+        action: r.action,
+        targetId: r.target_id,
+        outcome: r.outcome,
+        reasonCode: r.reason_code,
+        detailSummary: r.detail_summary,
+        occurredAt: r.occurred_at
       }))
     };
   }
@@ -1452,5 +2084,526 @@ export class PgVenueFoundationStore implements VenueFoundationStorePort {
       [notificationId, recipientActorId]
     );
     return (res.rowCount ?? 0) > 0;
+  }
+
+  async recordVenueAuditEvent(
+    input: Omit<VenueAuditEventRecord, 'id' | 'occurredAt'>,
+    nowIso = new Date().toISOString()
+  ): Promise<VenueAuditEventRecord> {
+    await this.ensureSeeded();
+    const id = `vaudit-${Date.now().toString(36)}-${generateSessionToken().slice(0, 6)}`;
+    await this.pool.query(
+      `INSERT INTO ops_audit.venue_audit_event
+         (id, actor_account_id, action, target_id, outcome, reason_code, detail_summary, occurred_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8::timestamptz)`,
+      [
+        id,
+        input.actorAccountId,
+        input.action,
+        input.targetId,
+        input.outcome,
+        input.reasonCode,
+        JSON.stringify(input.detailSummary),
+        nowIso
+      ]
+    );
+    return {
+      id,
+      actorAccountId: input.actorAccountId,
+      action: input.action,
+      targetId: input.targetId,
+      outcome: input.outcome,
+      reasonCode: input.reasonCode,
+      detailSummary: input.detailSummary,
+      occurredAt: nowIso
+    };
+  }
+
+  async submitCertificationRequest(
+    input: SubmitCertificationRequestInput,
+    nowIso = new Date().toISOString()
+  ): Promise<CertificationRequestRecord> {
+    await this.ensureSeeded();
+    const summary = input.summary.trim();
+    if (!summary) throw new Error('申請内容・理由を入力してください。');
+
+    const actorRes = await this.pool.query<{ id: string; kind: Actor['kind']; display_name: string }>(
+      'SELECT id, kind, display_name FROM simulation.actor WHERE id = $1',
+      [input.targetActorId]
+    );
+    const targetActor = actorRes.rows[0];
+    if (!targetActor) throw new Error('対象アカウントが見つかりません。');
+    if (input.kind === 'organization' && targetActor.kind !== 'organization') {
+      throw new Error('市民団体認証は市民団体アカウントのみ申請できます。');
+    }
+    if (input.kind === 'expert' && targetActor.kind !== 'person') {
+      throw new Error('専門家資格認証は一般市民（個人）枠アカウントのみ申請できます。');
+    }
+
+    const id = `cert-${Date.now().toString(36)}-${generateSessionToken().slice(0, 6)}`;
+    const orgName = input.kind === 'organization' ? (input.organizationName?.trim() || targetActor.display_name) : null;
+    const evidenceNote = input.evidenceNote?.trim() || null;
+
+    const tx = await this.pool.connect();
+    try {
+      await tx.query('BEGIN');
+      await tx.query(
+        `INSERT INTO simulation.certification_request
+           (id, kind, applicant_account_id, target_actor_id, organization_name, summary, evidence_note, status, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',$8::timestamptz)`,
+        [id, input.kind, input.applicantAccountId, input.targetActorId, orgName, summary, evidenceNote, nowIso]
+      );
+      if (input.kind === 'organization') {
+        await tx.query(
+          `UPDATE simulation.venue_profile SET org_certification_status = 'pending', updated_at = $2::timestamptz WHERE actor_id = $1`,
+          [input.targetActorId, nowIso]
+        );
+      }
+      const opRes = await tx.query<{ actor_id: string }>(
+        `SELECT actor_id FROM simulation.demo_account WHERE role_track = 'operator' AND revoked_at IS NULL`
+      );
+      for (const op of opRes.rows) {
+        const notifId = `notif-${Date.now().toString(36)}-${generateSessionToken().slice(0, 6)}`;
+        await tx.query(
+          `INSERT INTO simulation.venue_notification
+             (id, recipient_actor_id, category, title, body, reference_id, is_read, created_at)
+           VALUES ($1,$2,'certification',$3,$4,$5,false,$6::timestamptz)`,
+          [
+            notifId,
+            op.actor_id,
+            input.kind === 'organization'
+              ? `【団体認証申請】${targetActor.display_name} から法人格・責任者認証の申請`
+              : `【専門家資格認証申請】${targetActor.display_name} から資格認証の申請`,
+            summary,
+            id,
+            nowIso
+          ]
+        );
+      }
+      await tx.query('COMMIT');
+    } catch (err) {
+      await tx.query('ROLLBACK');
+      throw err;
+    } finally {
+      tx.release();
+    }
+
+    await this.recordVenueAuditEvent(
+      {
+        actorAccountId: input.applicantAccountId,
+        action: `certification.${input.kind}.submit`,
+        targetId: id,
+        outcome: 'allowed',
+        reasonCode: 'SUBMITTED',
+        detailSummary: { targetActorId: input.targetActorId, kind: input.kind }
+      },
+      nowIso
+    );
+
+    return {
+      id,
+      kind: input.kind,
+      applicantAccountId: input.applicantAccountId,
+      targetActorId: input.targetActorId,
+      organizationName: orgName,
+      summary,
+      evidenceNote,
+      status: 'pending',
+      reviewerAccountId: null,
+      reviewReason: null,
+      reviewedAt: null,
+      createdAt: nowIso
+    };
+  }
+
+  async reviewCertificationRequest(
+    input: ReviewCertificationRequestInput,
+    nowIso = new Date().toISOString()
+  ): Promise<
+    | { ok: true; request: CertificationRequestRecord; auditEvent: VenueAuditEventRecord }
+    | { ok: false; reasonCode: string; message: string; auditEvent: VenueAuditEventRecord }
+  > {
+    await this.ensureSeeded();
+    const reason = input.reason.trim();
+    if (!reason) {
+      const auditEvent = await this.recordVenueAuditEvent(
+        {
+          actorAccountId: input.reviewerAccountId,
+          action: 'certification.review',
+          targetId: input.requestId,
+          outcome: 'denied',
+          reasonCode: 'REVIEW_REASON_REQUIRED',
+          detailSummary: { decision: input.decision }
+        },
+        nowIso
+      );
+      return { ok: false, reasonCode: 'REVIEW_REASON_REQUIRED', message: '審査理由を入力してください。', auditEvent };
+    }
+
+    const reqRes = await this.pool.query<{
+      id: string;
+      kind: CertificationKind;
+      applicant_account_id: string;
+      target_actor_id: string;
+      organization_name: string | null;
+      summary: string;
+      evidence_note: string | null;
+      status: CertificationStatus;
+      created_at: string;
+    }>(
+      `SELECT id, kind, applicant_account_id, target_actor_id, organization_name, summary, evidence_note, status, created_at::text
+       FROM simulation.certification_request WHERE id = $1`,
+      [input.requestId]
+    );
+    const r = reqRes.rows[0];
+    if (!r) {
+      const auditEvent = await this.recordVenueAuditEvent(
+        {
+          actorAccountId: input.reviewerAccountId,
+          action: 'certification.review',
+          targetId: input.requestId,
+          outcome: 'denied',
+          reasonCode: 'CERTIFICATION_REQUEST_NOT_FOUND',
+          detailSummary: {}
+        },
+        nowIso
+      );
+      return { ok: false, reasonCode: 'CERTIFICATION_REQUEST_NOT_FOUND', message: '対象の認証申請が見つかりません。', auditEvent };
+    }
+
+    if (
+      r.applicant_account_id === input.reviewerAccountId ||
+      input.reviewerOperatedActorIds.includes(r.target_actor_id)
+    ) {
+      const auditEvent = await this.recordVenueAuditEvent(
+        {
+          actorAccountId: input.reviewerAccountId,
+          action: `certification.${r.kind}.review`,
+          targetId: r.id,
+          outcome: 'denied',
+          reasonCode: 'SELF_REVIEW_PROHIBITED',
+          detailSummary: { applicantAccountId: r.applicant_account_id, targetActorId: r.target_actor_id }
+        },
+        nowIso
+      );
+      return {
+        ok: false,
+        reasonCode: 'SELF_REVIEW_PROHIBITED',
+        message: '自己審査は禁止されています。申請者とは独立した運営審査担当が審査してください。',
+        auditEvent
+      };
+    }
+
+    const auditId = `vaudit-${Date.now().toString(36)}-${generateSessionToken().slice(0, 6)}`;
+    const notifId = `notif-${Date.now().toString(36)}-${generateSessionToken().slice(0, 6)}`;
+    const reasonCode = input.decision === 'approved' ? 'CERTIFICATION_APPROVED' : 'CERTIFICATION_REJECTED';
+
+    const tx = await this.pool.connect();
+    try {
+      await tx.query('BEGIN');
+      await tx.query(
+        `UPDATE simulation.certification_request
+         SET status = $2, reviewer_account_id = $3, review_reason = $4, reviewed_at = $5::timestamptz
+         WHERE id = $1`,
+        [r.id, input.decision, input.reviewerAccountId, reason, nowIso]
+      );
+
+      if (r.kind === 'organization') {
+        await tx.query(
+          `UPDATE simulation.venue_profile
+           SET org_certification_status = $2, updated_at = $3::timestamptz
+           WHERE actor_id = $1`,
+          [r.target_actor_id, input.decision === 'approved' ? 'certified' : 'rejected', nowIso]
+        );
+        if (input.decision === 'approved') {
+          await tx.query(
+            `INSERT INTO simulation.actor_membership
+               (person_actor_id, organization_actor_id, role, is_dummy, certified_by_account_id, certified_at)
+             VALUES ($1,$1,'leader',false,$2,$3::timestamptz)
+             ON CONFLICT (person_actor_id, organization_actor_id)
+             DO UPDATE SET role = 'leader', certified_by_account_id = EXCLUDED.certified_by_account_id, certified_at = EXCLUDED.certified_at`,
+            [r.target_actor_id, input.reviewerAccountId, nowIso]
+          );
+        }
+      } else {
+        await tx.query(
+          `UPDATE simulation.venue_profile
+           SET expert_certified = $2, expert_certification_note = $3, updated_at = $4::timestamptz
+           WHERE actor_id = $1`,
+          [r.target_actor_id, input.decision === 'approved', input.decision === 'approved' ? reason : null, nowIso]
+        );
+      }
+
+      await tx.query(
+        `INSERT INTO simulation.venue_notification
+           (id, recipient_actor_id, category, title, body, reference_id, is_read, created_at)
+         VALUES ($1,$2,'certification',$3,$4,$5,false,$6::timestamptz)`,
+        [
+          notifId,
+          r.target_actor_id,
+          r.kind === 'organization'
+            ? input.decision === 'approved'
+              ? '【団体認証完了】市民団体認証・責任者権限が承認されました'
+              : '【団体認証見送り】市民団体認証が却下されました'
+            : input.decision === 'approved'
+              ? '【専門家資格認証完了】認証済み専門家バッジが付与されました'
+              : '【専門家資格認証見送り】資格認証が却下されました',
+          `運営審査理由：${reason}`,
+          r.id,
+          nowIso
+        ]
+      );
+
+      await tx.query(
+        `INSERT INTO ops_audit.venue_audit_event
+           (id, actor_account_id, action, target_id, outcome, reason_code, detail_summary, occurred_at)
+         VALUES ($1,$2,$3,$4,'allowed',$5,$6::jsonb,$7::timestamptz)`,
+        [
+          auditId,
+          input.reviewerAccountId,
+          `certification.${r.kind}.review`,
+          r.id,
+          reasonCode,
+          JSON.stringify({ kind: r.kind, targetActorId: r.target_actor_id, decision: input.decision, reason }),
+          nowIso
+        ]
+      );
+
+      await tx.query('COMMIT');
+    } catch (err) {
+      await tx.query('ROLLBACK');
+      throw err;
+    } finally {
+      tx.release();
+    }
+
+    return {
+      ok: true,
+      request: {
+        id: r.id,
+        kind: r.kind,
+        applicantAccountId: r.applicant_account_id,
+        targetActorId: r.target_actor_id,
+        organizationName: r.organization_name,
+        summary: r.summary,
+        evidenceNote: r.evidence_note,
+        status: input.decision,
+        reviewerAccountId: input.reviewerAccountId,
+        reviewReason: reason,
+        reviewedAt: nowIso,
+        createdAt: r.created_at
+      },
+      auditEvent: {
+        id: auditId,
+        actorAccountId: input.reviewerAccountId,
+        action: `certification.${r.kind}.review`,
+        targetId: r.id,
+        outcome: 'allowed',
+        reasonCode,
+        detailSummary: { kind: r.kind, targetActorId: r.target_actor_id, decision: input.decision, reason },
+        occurredAt: nowIso
+      }
+    };
+  }
+
+  async runMediatedAIPrimaryReview(
+    input: RunMediatedAIReviewInput,
+    nowIso = new Date().toISOString()
+  ): Promise<{ assessment: MediatedAIPrimaryAssessment; auditEvent: VenueAuditEventRecord }> {
+    await this.ensureSeeded();
+    const res = await this.pool.query<{
+      actor_id: string;
+      grid_cell_id: string | null;
+      postal_code: string | null;
+      interest_tags: VenueTag[];
+      strength_tags: VenueTag[];
+      bio: string;
+      age_internal: number | null;
+      gender_internal: string | null;
+      seeking_match: boolean;
+      org_certification_status: VenueProfileRecord['orgCertificationStatus'];
+      expert_certified: boolean;
+      expert_certification_note: string | null;
+      updated_at: string;
+    }>(
+      `SELECT actor_id, grid_cell_id, postal_code, interest_tags, strength_tags, bio, age_internal, gender_internal,
+              seeking_match, org_certification_status, expert_certified, expert_certification_note, updated_at::text
+       FROM simulation.venue_profile WHERE actor_id = ANY($1::text[])`,
+      [[input.citizenActorId, input.targetOrgActorId]]
+    );
+    const toProf = (r: (typeof res.rows)[number]): VenueProfileRecord => ({
+      actorId: r.actor_id,
+      gridCellId: r.grid_cell_id,
+      postalCode: r.postal_code,
+      interestTags: r.interest_tags,
+      strengthTags: r.strength_tags,
+      bio: r.bio,
+      ageInternal: r.age_internal,
+      genderInternal: r.gender_internal,
+      seekingMatch: r.seeking_match,
+      orgCertificationStatus: r.org_certification_status,
+      expertCertified: r.expert_certified,
+      expertCertificationNote: r.expert_certification_note,
+      updatedAt: r.updated_at
+    });
+    const citRow = res.rows.find((x) => x.actor_id === input.citizenActorId);
+    const orgRow = res.rows.find((x) => x.actor_id === input.targetOrgActorId);
+    if (!citRow || !orgRow) throw new Error('対象の市民または団体プロフィールが見つかりません。');
+
+    const recId = `med-ai-${Date.now().toString(36)}-${generateSessionToken().slice(0, 6)}`;
+    const assessment = buildMediatedAIAssessment(toProf(citRow), toProf(orgRow), recId, nowIso);
+    const auditEvent = await this.recordVenueAuditEvent(
+      {
+        actorAccountId: input.operatorAccountId,
+        action: 'mediated-match.ai-review',
+        targetId: recId,
+        outcome: 'allowed',
+        reasonCode: 'AI_PRIMARY_RECORDED',
+        detailSummary: {
+          recommendationId: recId,
+          citizenActorId: assessment.citizenActorId,
+          targetOrgActorId: assessment.targetOrgActorId,
+          distanceMeters: assessment.distanceMeters,
+          matchedTags: assessment.matchedTags,
+          triageSignal: assessment.triageSignal,
+          status: assessment.status,
+          externalApiCalled: false,
+          rationale: assessment.rationale
+        }
+      },
+      nowIso
+    );
+    return { assessment, auditEvent };
+  }
+
+  async submitMediatedHumanReview(
+    input: SubmitMediatedHumanReviewInput,
+    nowIso = new Date().toISOString()
+  ): Promise<
+    | { ok: true; auditEvent: VenueAuditEventRecord; notificationSent: boolean }
+    | { ok: false; reasonCode: string; message: string; auditEvent: VenueAuditEventRecord }
+  > {
+    await this.ensureSeeded();
+    const reason = input.reason.trim();
+    if (!reason) {
+      const auditEvent = await this.recordVenueAuditEvent(
+        {
+          actorAccountId: input.reviewerAccountId,
+          action: 'mediated-match.human-review',
+          targetId: `${input.citizenActorId}:${input.targetOrgActorId}`,
+          outcome: 'denied',
+          reasonCode: 'REVIEW_REASON_REQUIRED',
+          detailSummary: {}
+        },
+        nowIso
+      );
+      return { ok: false, reasonCode: 'REVIEW_REASON_REQUIRED', message: '人間二次審査の理由を入力してください。', auditEvent };
+    }
+
+    if (
+      input.reviewerOperatedActorIds.includes(input.citizenActorId) ||
+      input.reviewerOperatedActorIds.includes(input.targetOrgActorId)
+    ) {
+      const auditEvent = await this.recordVenueAuditEvent(
+        {
+          actorAccountId: input.reviewerAccountId,
+          action: 'mediated-match.human-review',
+          targetId: `${input.citizenActorId}:${input.targetOrgActorId}`,
+          outcome: 'denied',
+          reasonCode: 'SELF_REVIEW_PROHIBITED',
+          detailSummary: { citizenActorId: input.citizenActorId, targetOrgActorId: input.targetOrgActorId }
+        },
+        nowIso
+      );
+      return {
+        ok: false,
+        reasonCode: 'SELF_REVIEW_PROHIBITED',
+        message: '当事者を操作するアカウントによる自己審査は禁止されています。',
+        auditEvent
+      };
+    }
+
+    const recId = input.recommendationId?.trim() ?? '';
+    const aiRes = await this.pool.query<{ id: string }>(
+      `SELECT id FROM ops_audit.venue_audit_event
+       WHERE action = 'mediated-match.ai-review'
+         AND outcome = 'allowed'
+         AND target_id = $1
+         AND detail_summary->>'citizenActorId' = $2
+         AND detail_summary->>'targetOrgActorId' = $3
+       LIMIT 1`,
+      [recId, input.citizenActorId, input.targetOrgActorId]
+    );
+    if (!recId || aiRes.rowCount === 0) {
+      const auditEvent = await this.recordVenueAuditEvent(
+        {
+          actorAccountId: input.reviewerAccountId,
+          action: 'mediated-match.human-review',
+          targetId: `${input.citizenActorId}:${input.targetOrgActorId}`,
+          outcome: 'denied',
+          reasonCode: 'AI_RECOMMENDATION_REQUIRED',
+          detailSummary: { recommendationId: recId || null }
+        },
+        nowIso
+      );
+      return {
+        ok: false,
+        reasonCode: 'AI_RECOMMENDATION_REQUIRED',
+        message: '要件4により、先にAI一次評価を実行して推薦IDを参照しない限り人間二次審査を実行できません。',
+        auditEvent
+      };
+    }
+
+    const actorsRes = await this.pool.query<{ id: string; display_name: string }>(
+      'SELECT id, display_name FROM simulation.actor WHERE id = ANY($1::text[])',
+      [[input.citizenActorId, input.targetOrgActorId]]
+    );
+    const citName = actorsRes.rows.find((a) => a.id === input.citizenActorId)?.display_name ?? input.citizenActorId;
+    const orgName = actorsRes.rows.find((a) => a.id === input.targetOrgActorId)?.display_name ?? input.targetOrgActorId;
+
+    const auditEvent = await this.recordVenueAuditEvent(
+      {
+        actorAccountId: input.reviewerAccountId,
+        action: 'mediated-match.human-review',
+        targetId: recId,
+        outcome: 'allowed',
+        reasonCode: input.decision === 'approved' ? 'MEDIATED_MATCH_APPROVED' : 'MEDIATED_MATCH_REJECTED',
+        detailSummary: {
+          recommendationId: recId,
+          citizenActorId: input.citizenActorId,
+          targetOrgActorId: input.targetOrgActorId,
+          decision: input.decision,
+          reason
+        }
+      },
+      nowIso
+    );
+
+    if (input.decision === 'approved') {
+      const n1 = `notif-${Date.now().toString(36)}-${generateSessionToken().slice(0, 6)}`;
+      const n2 = `notif-${Date.now().toString(36)}-${generateSessionToken().slice(0, 6)}`;
+      await this.pool.query(
+        `INSERT INTO simulation.venue_notification
+           (id, recipient_actor_id, category, title, body, reference_id, is_read, created_at)
+         VALUES
+           ($1,$2,'matching',$3,$4,$5,false,$6::timestamptz),
+           ($7,$8,'matching',$9,$10,$5,false,$6::timestamptz)`,
+        [
+          n1,
+          input.citizenActorId,
+          `【運営仲介・厳格審査承認】${orgName} のおすすめ通知`,
+          `AI一次評価 (${recId}) と運営者の人間二次審査を経てご案内します。理由：${reason}`,
+          recId,
+          nowIso,
+          n2,
+          input.targetOrgActorId,
+          `【運営仲介・厳格審査承認】紹介希望の ${citName} さんをご案内`,
+          `AI一次評価 (${recId}) と運営者の人間二次審査を経てマッチング通知を発行しました。理由：${reason}`
+        ]
+      );
+      return { ok: true, auditEvent, notificationSent: true };
+    }
+
+    return { ok: true, auditEvent, notificationSent: false };
   }
 }

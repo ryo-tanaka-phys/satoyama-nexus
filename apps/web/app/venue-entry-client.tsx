@@ -15,6 +15,8 @@ import type {
 } from '../../../db/venue-store';
 import { KyushuGridPicker } from './components/kyushu-grid-picker';
 import { VenueSocialHub } from './components/venue-social-hub';
+import { VenueCertificationBanner } from './components/venue-certification-banner';
+import { VenueOperatorPanel } from './components/venue-operator-panel';
 
 export interface InitialVenuePageData {
   authenticated: boolean;
@@ -461,14 +463,6 @@ export function VenueEntryClient({ initialData }: { initialData: InitialVenuePag
                 </div>
               </div>
 
-              {data.account.roleTrack === 'organization' &&
-                data.publicProfile?.orgCertificationStatus !== 'certified' && (
-                  <div className="feedback-box feedback-warn" style={{ marginTop: 12, marginBottom: 0 }}>
-                    <strong>団体専用機能ロック中（法人格モデル）：</strong>
-                    運営による市民団体認証・責任者権限付与が完了するまで、カレンダー活動管理・メンバー管理・メンバーチャット・簡易レポート作成・公的申請はロックされます（P4/P5 で申請・解放フローを接続）。
-                  </div>
-                )}
-
               <div className="profile-summary-strip">
                 <span>
                   本拠地：<strong>{data.publicProfile?.gridLabel ?? '未設定'}</strong>
@@ -491,6 +485,26 @@ export function VenueEntryClient({ initialData }: { initialData: InitialVenuePag
                 </span>
               </div>
             </section>
+
+            {/* Role-specific certification banner (Organization legal-entity / Citizen expert credential) */}
+            <VenueCertificationBanner
+              account={data.account}
+              publicProfile={data.publicProfile}
+              certificationRequests={data.snapshot.certificationRequests}
+              busy={busy}
+              onRefresh={refreshSession}
+              onFeedback={setFeedback}
+            />
+
+            {/* Operator-only governance & mediated strict-review panel */}
+            {data.account.roleTrack === 'operator' && (
+              <VenueOperatorPanel
+                snapshot={data.snapshot}
+                busy={busy}
+                onRefresh={refreshSession}
+                onFeedback={setFeedback}
+              />
+            )}
 
             <VenueSocialHub
               account={data.account}
