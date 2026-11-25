@@ -90,7 +90,7 @@ export const DEMO_PERSONAS: readonly DemoPersonaDescriptor[] = [
   }
 ];
 
-function resolveServerAuthContext(personaId: DemoPersonaId, nowIso: string): ServerAuthContext {
+export function resolveServerAuthContext(personaId: DemoPersonaId, nowIso: string): ServerAuthContext {
   switch (personaId) {
     case 'creator':
       return {
@@ -128,7 +128,7 @@ function resolveServerAuthContext(personaId: DemoPersonaId, nowIso: string): Ser
   }
 }
 
-function buildInitialSeed(): {
+export function buildInitialSeed(): {
   state: GovernedDomainState;
   actorProfiles: ActorMatchingProfile[];
 } {
@@ -450,6 +450,11 @@ function buildInitialSeed(): {
 
 export interface WorkbenchSnapshot {
   phaseNotice: string;
+  persistence: {
+    mode: 'postgis' | 'in-memory';
+    spatialEngine: 'PostGIS ST_Distance' | 'Haversine fallback';
+    label: string;
+  };
   publicCatalog: ReturnType<typeof exportCatalogWithActors> & {
     fixtureActivityCount: number;
   };
@@ -568,6 +573,11 @@ export class SimulationWorkbench {
 
     return {
       phaseNotice: 'Phase 1：すべての依頼・応答・調整・合意・実施準備は模擬処理です。外部への実連絡・実AI呼出は行いません。',
+      persistence: {
+        mode: 'in-memory',
+        spatialEngine: 'Haversine fallback',
+        label: 'メモリ動作（DATABASE_URL 未設定のため再起動で初期化）'
+      },
       publicCatalog: {
         ...exportCatalogWithActors(this.state.graph),
         fixtureActivityCount: publicActivitiesFixture.length

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { MaterialChangeKind } from '@satoyama/domain';
-import { getWorkbench, type DemoPersonaId } from '../../../../lib/simulation-store';
+import type { DemoPersonaId } from '../../../../lib/simulation-store';
+import { getActiveWorkbench } from '../../../../lib/workbench-runtime';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,7 +15,7 @@ export async function POST(request: NextRequest) {
     addActorId?: string;
   };
 
-  const result = await getWorkbench().applyMaterialChange(body.personaId ?? 'anonymous', {
+  const result = await getActiveWorkbench().applyMaterialChange(body.personaId ?? 'anonymous', {
     caseId: body.caseId ?? '',
     expectedVersion: Number(body.expectedVersion ?? 0),
     changeKind: body.changeKind ?? 'participation-condition',

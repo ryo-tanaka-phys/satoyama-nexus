@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getWorkbench, type DemoPersonaId } from '../../../../lib/simulation-store';
+import type { DemoPersonaId } from '../../../../lib/simulation-store';
+import { getActiveWorkbench } from '../../../../lib/workbench-runtime';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,7 +17,7 @@ export async function POST(request: NextRequest) {
     scheduleStartAt?: string | null;
   };
 
-  const result = getWorkbench().createActivityProposal(body.personaId ?? 'anonymous', {
+  const result = await getActiveWorkbench().createActivityProposal(body.personaId ?? 'anonymous', {
     title: body.title ?? '',
     locationLabel: body.locationLabel ?? '',
     latitude: typeof body.latitude === 'number' ? body.latitude : null,

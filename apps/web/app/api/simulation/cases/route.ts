@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getWorkbench, type DemoPersonaId } from '../../../../lib/simulation-store';
+import type { DemoPersonaId } from '../../../../lib/simulation-store';
+import { getActiveWorkbench } from '../../../../lib/workbench-runtime';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,7 +12,7 @@ export async function POST(request: NextRequest) {
     role?: string;
   };
 
-  const result = getWorkbench().createDraftCase(body.personaId ?? 'anonymous', {
+  const result = await getActiveWorkbench().createDraftCase(body.personaId ?? 'anonymous', {
     activityId: body.activityId ?? '',
     candidateActorId: body.candidateActorId ?? '',
     role: body.role
