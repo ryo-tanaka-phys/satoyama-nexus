@@ -14,7 +14,7 @@ describe('Phase 1 boundaries', () => {
   it('requires sequential stages after human approval', () => {
     let value = { ...draft, review };
     expect(() => advanceSimulation(value,'agreed')).toThrow('Invalid stage');
-    for (const stage of ['requested','coordinating','agreed','preparing'] as const) value = {...advanceSimulation(value,stage),review};
+    for (const stage of ['requested','responded','coordinating','agreed','preparing'] as const) value = {...advanceSimulation(value,stage),review};
     expect(value.stage).toBe('preparing');
     expect(draft.stage).toBe('draft');
   });

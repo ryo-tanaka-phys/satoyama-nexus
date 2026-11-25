@@ -7,9 +7,10 @@ import type { DemoPersonaId, WorkbenchSnapshot } from '../lib/simulation-store';
 const STAGES: readonly { key: CollaborationStage; label: string }[] = [
   { key: 'draft', label: '1. 下書き (draft)' },
   { key: 'requested', label: '2. 模擬依頼 (requested)' },
-  { key: 'coordinating', label: '3. 模擬調整 (coordinating)' },
-  { key: 'agreed', label: '4. 模擬合意 (agreed)' },
-  { key: 'preparing', label: '5. 実施準備 (preparing)' }
+  { key: 'responded', label: '3. 模擬応答 (responded)' },
+  { key: 'coordinating', label: '4. 模擬調整 (coordinating)' },
+  { key: 'agreed', label: '5. 模擬合意 (agreed)' },
+  { key: 'preparing', label: '6. 実施準備 (preparing)' }
 ];
 
 interface FeedbackState {
@@ -32,6 +33,9 @@ export function SimulationWorkbenchClient({ initialSnapshot }: { initialSnapshot
   const [proposalLocationLabel, setProposalLocationLabel] = useState('');
   const [proposalSkills, setProposalSkills] = useState('植生観察, 竹林整備');
   const [proposalTransport, setProposalTransport] = useState('地域バス, 徒歩');
+  const [proposalLat, setProposalLat] = useState('');
+  const [proposalLng, setProposalLng] = useState('');
+  const [proposalStartAt, setProposalStartAt] = useState('');
 
   // Human review form
   const [reviewDecision, setReviewDecision] = useState<'approved' | 'rejected'>('approved');
@@ -122,6 +126,9 @@ export function SimulationWorkbenchClient({ initialSnapshot }: { initialSnapshot
         personaId,
         title: proposalTitle,
         locationLabel: proposalLocationLabel,
+        latitude: proposalLat.trim() ? Number(proposalLat) : null,
+        longitude: proposalLng.trim() ? Number(proposalLng) : null,
+        scheduleStartAt: proposalStartAt || null,
         requiredSkills: proposalSkills.split(/[,、]/).map((s) => s.trim()).filter(Boolean),
         transportModes: proposalTransport.split(/[,、]/).map((s) => s.trim()).filter(Boolean)
       },
@@ -134,6 +141,9 @@ export function SimulationWorkbenchClient({ initialSnapshot }: { initialSnapshot
         });
         setProposalTitle('');
         setProposalLocationLabel('');
+        setProposalLat('');
+        setProposalLng('');
+        setProposalStartAt('');
         setShowProposalForm(false);
       }
     );
@@ -373,6 +383,40 @@ export function SimulationWorkbenchClient({ initialSnapshot }: { initialSnapshot
                     placeholder="例：南尾根エリア（詳細座標は確認中）"
                   />
                 </label>
+                <div className="grid-2" style={{ gap: 10 }}>
+                  <label className="field">
+                    緯度（任意・WGS84、例 35.6400）
+                    <input
+                      type="number"
+                      step="any"
+                      min={-90}
+                      max={90}
+                      value={proposalLat}
+                      onChange={(e) => setProposalLat(e.target.value)}
+                      placeholder="空欄なら座標欠損(null)"
+                    />
+                  </label>
+                  <label className="field">
+                    経度（任意・WGS84、例 139.2700）
+                    <input
+                      type="number"
+                      step="any"
+                      min={-180}
+                      max={180}
+                      value={proposalLng}
+                      onChange={(e) => setProposalLng(e.target.value)}
+                      placeholder="空欄なら座標欠損(null)"
+                    />
+                  </label>
+                </div>
+                <label className="field">
+                  活動日時（任意・日本時間。空欄なら日程未記載 not-stated）
+                  <input
+                    type="datetime-local"
+                    value={proposalStartAt}
+                    onChange={(e) => setProposalStartAt(e.target.value)}
+                  />
+                </label>
                 <label className="field">
                   必要スキル（カンマ区切り）
                   <input
@@ -517,9 +561,9 @@ export function SimulationWorkbenchClient({ initialSnapshot }: { initialSnapshot
       <section className="section-block">
         <h2>協働までの流れ（M3 AI一次推奨 → 人間の二次審査 → M4 模擬協働遷移）</h2>
         <ol className="meta-list" style={{ marginBottom: 16 }}>
-          <li>AI一次推薦（Phase 1 はローカル決定論的アダプター。承認や遷移は不可）</li>
+          <li>AI一次推薦（Phase 1 はローカル決定論的アダプター。承認や遷移は不可。未実行だと人間審査は受け付けません）</li>
           <li>人間による二次審査（作成者・重要変更者・当事者による自己レビューは禁止）</li>
-          <li>模擬依頼 (requested) → 模擬調整 (coordinating) → 模擬合意 (agreed) → 実施準備 (preparing)</li>
+          <li>模擬依頼 (requested) → 模擬応答 (responded) → 模擬調整 (coordinating) → 模擬合意 (agreed) → 実施準備 (preparing)</li>
         </ol>
 
         <div className="card" style={{ marginBottom: 16 }}>

@@ -7,7 +7,11 @@ export interface PublicActivity {
 export interface SimulatedProfile {
   kind: 'simulated-profile'; id: string; displayName: string; skills: string[];
 }
-export type CollaborationStage = 'draft' | 'requested' | 'coordinating' | 'agreed' | 'preparing';
+/** 2026-11-25 owner decision: `responded` added between requested and coordinating (requirements 5). */
+export type CollaborationStage = 'draft' | 'requested' | 'responded' | 'coordinating' | 'agreed' | 'preparing';
+export const COLLABORATION_STAGES: readonly CollaborationStage[] = [
+  'draft', 'requested', 'responded', 'coordinating', 'agreed', 'preparing'
+];
 export interface HumanReview {
   reviewerId: string; decision: 'approved' | 'rejected'; reason: string; reviewedAt: string;
 }
@@ -16,7 +20,7 @@ export interface SimulationCase {
   stage: CollaborationStage; review?: HumanReview;
 }
 const nextStage: Partial<Record<CollaborationStage, CollaborationStage>> = {
-  draft: 'requested', requested: 'coordinating', coordinating: 'agreed', agreed: 'preparing'
+  draft: 'requested', requested: 'responded', responded: 'coordinating', coordinating: 'agreed', agreed: 'preparing'
 };
 export function advanceSimulation(value: SimulationCase, target: CollaborationStage): SimulationCase {
   if (value.mode !== 'simulation') throw new Error('Simulation only');

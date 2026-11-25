@@ -11,6 +11,8 @@
   - ADR 0002 に従い、案件作成者・直近重要変更者・案件当事者 Actor の操作アカウントによる自己審査を原則禁止（M1 に例外経路なし）。
   - 当事者・参加条件・必要資源・活動参照の重要変更、および重要度未分類（`unknown`）の変更はいずれも `case.revision` をインクリメントして旧版の承認を無効化し、再審査を要求する。
   - M0 段階語彙（`draft` → `requested` → `coordinating` → `agreed` → `preparing`）と `mode: 'simulation'` を維持する。
+    - 2026-11-25 更新（オーナー判断）：`requested` と `coordinating` の間に模擬応答段階 `responded` を追加。
+  - 2026-11-25 更新（要件4）：人間審査（承認・却下とも）は現行 `case.revision` に紐づく `AIRecommendationRecord` の参照を必須とし、未参照は `AI_RECOMMENDATION_REQUIRED`、別改訂の参照は `UNKNOWN_AI_RECOMMENDATION` で拒否する。
 - **競合制御・冪等性・原子的監査と秘匿（`executeWithAtomicAudit` / `sanitizeAuditDiffSummary` / `APP_ROLE_HISTORY_PRIVILEGES`）**:
   - `expectedVersion` 不一致を `VERSION_CONFLICT` で拒否し、同一 `operationId` の再送は履歴重複なしで冪等応答する。
   - 拒否イベントは業務状態を変更せず `persistDeniedAudit` へ分離記録し、許可更新では業務状態保存と監査追記を同一トランザクション契約内で実行して監査失敗時にロールバックする。

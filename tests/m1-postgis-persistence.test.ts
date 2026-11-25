@@ -13,7 +13,8 @@ describe('M1-06 (#8) Versioned SQL migration files static checks', () => {
     const files = await loadMigrationFiles(MIGRATIONS_DIR);
     expect(files.map((f) => f.version)).toEqual([
       '0001_m1_schemas_and_catalog.sql',
-      '0002_m1_simulation_and_audit.sql'
+      '0002_m1_simulation_and_audit.sql',
+      '0003_add_responded_stage.sql'
     ]);
     for (const f of files) {
       expect(f.checksum).toMatch(/^[a-f0-9]{64}$/);
@@ -80,7 +81,7 @@ describe.runIf(Boolean(DB_URL))('M1-06 (#8) PostGIS migrations, constraints, rol
       const client = await pool.connect();
       try {
         const res = await applyMigrations(client, files);
-        expect(res.applied).toHaveLength(2);
+        expect(res.applied).toHaveLength(files.length);
       } finally {
         client.release();
       }
@@ -118,7 +119,7 @@ describe.runIf(Boolean(DB_URL))('M1-06 (#8) PostGIS migrations, constraints, rol
 
         // Fix unapplied 0002 SQL and recover forward without DROP/TRUNCATE/reset
         const recovered = await applyMigrations(client, files);
-        expect(recovered.applied).toEqual([files[1].version]);
+        expect(recovered.applied).toEqual(files.slice(1).map((f) => f.version));
         expect(recovered.skipped).toEqual([files[0].version]);
         expect((await client.query("SELECT title FROM public_catalog.activity WHERE id = 'survivor-act'")).rows[0].title).toBe('PRESERVE AFTER FAILURE');
       } finally {

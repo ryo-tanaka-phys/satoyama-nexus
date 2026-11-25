@@ -13,13 +13,15 @@ export async function POST(request: NextRequest) {
     requiredSkills?: string[];
     transportModes?: string[];
     itemsToConfirm?: string[];
+    scheduleStartAt?: string | null;
   };
 
   const result = getWorkbench().createActivityProposal(body.personaId ?? 'anonymous', {
     title: body.title ?? '',
     locationLabel: body.locationLabel ?? '',
-    latitude: body.latitude ?? null,
-    longitude: body.longitude ?? null,
+    latitude: typeof body.latitude === 'number' ? body.latitude : null,
+    longitude: typeof body.longitude === 'number' ? body.longitude : null,
+    scheduleStartAt: typeof body.scheduleStartAt === 'string' ? body.scheduleStartAt : null,
     requiredSkills: Array.isArray(body.requiredSkills) ? body.requiredSkills : [],
     transportModes: Array.isArray(body.transportModes) ? body.transportModes : [],
     itemsToConfirm: Array.isArray(body.itemsToConfirm) ? body.itemsToConfirm : []

@@ -23,6 +23,7 @@ declare module 'pg' {
     constructor(config?: ClientConfig);
     connect(): Promise<PoolClient>;
     query<R = Record<string, unknown>>(text: string, values?: readonly unknown[]): Promise<QueryResult<R>>;
+    on(event: 'error', listener: (err: Error & { code?: string }) => void): this;
     end(): Promise<void>;
   }
   const pg: { Client: typeof Client; Pool: typeof Pool };

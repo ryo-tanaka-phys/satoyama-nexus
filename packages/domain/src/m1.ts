@@ -116,7 +116,7 @@ export function validateDomainGraph(graph: DomainGraph): void {
     const a = findRevision(c.activity.id, c.activity.revision);
     requireValue(c.mode === 'simulation', 'Simulation only');
     requireValue(a && a.domain === c.activity.domain && a.revision === c.activity.revision, 'Unknown activity revision');
-    requireValue(['draft','requested','coordinating','agreed','preparing'].includes(c.stage), 'Invalid stage');
+    requireValue(['draft','requested','responded','coordinating','agreed','preparing'].includes(c.stage), 'Invalid stage');
     unique(c.parties.map(p => p.actorId), 'case party');
     for (const p of c.parties) {
       requireValue(actors.get(p.actorId)?.domain === 'simulation' && p.role.trim(), 'Simulation actors only');

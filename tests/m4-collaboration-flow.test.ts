@@ -19,10 +19,24 @@ describe('M4 Phase 1 end-to-end collaboration workbench flow', () => {
       true
     );
 
-    // 2. Propose a new simulated activity & verify M2 matching updates
+    // 2. Propose a new simulated activity (with coordinates + date) & verify M2 matching updates
+    const partial = wb.createActivityProposal('creator', {
+      title: '座標片方だけ',
+      locationLabel: 'x',
+      latitude: 35.6,
+      longitude: null,
+      requiredSkills: [],
+      transportModes: []
+    });
+    expect(partial.ok).toBe(false);
+    if (!partial.ok) expect(partial.reasonCode).toBe('INVALID_LOCATION');
+
     const prop = wb.createActivityProposal('creator', {
       title: '里山ホタル生息地の草刈り',
-      locationLabel: '西沢エリア（詳細未定）',
+      locationLabel: '西沢エリア（概算）',
+      latitude: 35.645,
+      longitude: 139.275,
+      scheduleStartAt: '2026-12-13T09:00',
       requiredSkills: ['植生観察'],
       transportModes: ['地域バス']
     });
@@ -30,6 +44,13 @@ describe('M4 Phase 1 end-to-end collaboration workbench flow', () => {
     if (!prop.ok) return;
     expect(prop.activity.domain).toBe('simulation');
     expect(prop.snapshot.recommendations.length).toBeGreaterThan(0);
+    const located = prop.snapshot.recommendations.find((r) => r.actorId === 'sim-person-002');
+    expect(located?.geographic.distanceMeters).not.toBeNull();
+    const newCond = prop.snapshot.participationConditions.find((c) => c.target.activityId === prop.activity.id);
+    expect(newCond?.schedule.dates).toEqual({
+      state: 'specified',
+      value: [{ startAt: '2026-12-13T09:00:00+09:00', endAt: null, label: '模擬活動日（提案時入力）' }]
+    });
 
     // 3. Create a draft collaboration case from M2 recommendation
     const created = wb.createDraftCase('creator', {
@@ -51,6 +72,16 @@ describe('M4 Phase 1 end-to-end collaboration workbench flow', () => {
       expect(earlyTransition.reasonCode).toBe('HUMAN_APPROVAL_REQUIRED');
       expect(earlyTransition.deniedAuditEvent.outcome).toBe('denied');
     }
+
+    // 4b. Human review BEFORE AI primary review MUST be denied (requirement 4: AI first, then human)
+    const reviewBeforeAI = await wb.submitHumanReview('reviewer', {
+      caseId,
+      expectedVersion: 1,
+      decision: 'approved',
+      reason: 'AI評価前に承認を試みる'
+    });
+    expect(reviewBeforeAI.ok).toBe(false);
+    if (!reviewBeforeAI.ok) expect(reviewBeforeAI.reasonCode).toBe('AI_RECOMMENDATION_REQUIRED');
 
     // 5. Run M3 AI Primary Review — STILL must not unlock transition
     const aiRes = await wb.runAIPrimaryReview(caseId);
@@ -115,6 +146,23 @@ describe('M4 Phase 1 end-to-end collaboration workbench flow', () => {
     });
     expect(toRequested.ok).toBe(true);
 
+    // requested -> coordinating skipping the simulated response MUST be rejected
+    const skipResponse = await wb.advanceCaseStage('coordinator', {
+      caseId,
+      expectedVersion: 1,
+      targetStage: 'coordinating'
+    });
+    expect(skipResponse.ok).toBe(false);
+    if (!skipResponse.ok) expect(skipResponse.reasonCode).toBe('INVALID_STAGE_TRANSITION');
+
+    const toResponded = await wb.advanceCaseStage('coordinator', {
+      caseId,
+      expectedVersion: 1,
+      targetStage: 'responded',
+      simulationNote: '模擬応答（参加意向あり）を記録'
+    });
+    expect(toResponded.ok).toBe(true);
+
     const toCoordinating = await wb.advanceCaseStage('coordinator', {
       caseId,
       expectedVersion: 1,
@@ -173,7 +221,7 @@ describe('M4 Phase 1 end-to-end collaboration workbench flow', () => {
     expect(finalCase?.stage).toBe('preparing');
     expect(finalCase?.revision).toBe(2);
     expect(toPreparing.snapshot.reviewRecords.filter((r) => r.caseId === caseId)).toHaveLength(2);
-    expect(toPreparing.snapshot.collaborationNotes.filter((n) => n.caseId === caseId)).toHaveLength(4);
+    expect(toPreparing.snapshot.collaborationNotes.filter((n) => n.caseId === caseId)).toHaveLength(5);
     expect(toPreparing.snapshot.collaborationNotes.every((n) => n.externalContactSent === false)).toBe(true);
     expect(toPreparing.snapshot.auditEvents.some((e) => e.reasonCode === 'SELF_REVIEW_PROHIBITED')).toBe(true);
     expect(toPreparing.snapshot.auditEvents.some((e) => e.reasonCode === 'STAGE_TRANSITIONED')).toBe(true);

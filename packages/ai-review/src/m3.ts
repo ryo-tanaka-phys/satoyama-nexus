@@ -108,7 +108,8 @@ export interface CaseReviewReadiness {
 
 const NEXT_STAGE: Partial<Record<CollaborationStage, CollaborationStage>> = {
   draft: 'requested',
-  requested: 'coordinating',
+  requested: 'responded',
+  responded: 'coordinating',
   coordinating: 'agreed',
   agreed: 'preparing'
 };

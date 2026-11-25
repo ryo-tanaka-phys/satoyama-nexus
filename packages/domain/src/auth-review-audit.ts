@@ -152,7 +152,8 @@ export type CommandResult =
 
 const NEXT_STAGE: Partial<Record<CollaborationStage, CollaborationStage>> = {
   draft: 'requested',
-  requested: 'coordinating',
+  requested: 'responded',
+  responded: 'coordinating',
   coordinating: 'agreed',
   agreed: 'preparing'
 };
@@ -384,14 +385,19 @@ export function recordHumanReview(
     return deny('INVALID_REVIEW_PAYLOAD', 'Review reason and policyVersion are required', targetCase.revision);
   }
 
-  let aiRecVersion: string | null = null;
-  if (input.aiRecommendationId) {
-    const rec = state.aiRecommendations.find(
-      (r) => r.id === input.aiRecommendationId && r.caseId === targetCase.id && r.caseRevision === targetCase.revision
+  // Requirement 4: human secondary review must follow an AI primary recommendation for THIS revision.
+  if (!text(input.aiRecommendationId)) {
+    return deny(
+      'AI_RECOMMENDATION_REQUIRED',
+      'Human review requires an AI primary recommendation for the current case revision',
+      targetCase.revision
     );
-    if (!rec) return deny('UNKNOWN_AI_RECOMMENDATION', 'Referenced AIRecommendation does not match case revision', targetCase.revision);
-    aiRecVersion = `${rec.model}@${rec.promptVersion}`;
   }
+  const rec = state.aiRecommendations.find(
+    (r) => r.id === input.aiRecommendationId && r.caseId === targetCase.id && r.caseRevision === targetCase.revision
+  );
+  if (!rec) return deny('UNKNOWN_AI_RECOMMENDATION', 'Referenced AIRecommendation does not match case revision', targetCase.revision);
+  const aiRecVersion = `${rec.model}@${rec.promptVersion}`;
 
   const review: ReviewRecord = {
     id: `rev-${state.reviewRecords.length + 1}-${input.operationId}`,
