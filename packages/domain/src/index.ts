@@ -32,3 +32,5 @@ export * from './m1';
 export * from './provenance';
 
 export * from './actor-provenance';
+
+export * from './location-conditions';
