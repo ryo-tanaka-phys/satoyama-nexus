@@ -5,3 +5,5 @@ export interface MatchingInput { activity: PublicActivity; profile: SimulatedPro
 export function geographicFit(_input: MatchingInput): GeographicFit {
   return { status: 'not-evaluated', reason: 'PostGIS distance and travel constraints are deferred to M2' };
 }
+
+export * from './m2';
