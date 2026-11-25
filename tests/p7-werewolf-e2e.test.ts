@@ -2,7 +2,8 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   buildGuaranteedWerewolfRoles,
   drawShuffledWerewolfRoles,
-  generateWerewolfRoomCode
+  generateWerewolfRoomCode,
+  WEREWOLF_MISSIONS
 } from '@satoyama/domain';
 import { InMemoryVenueFoundationStore } from '../db/venue-store';
 import { setActiveVenueFoundationStoreForTest } from '../apps/web/lib/venue-runtime';
@@ -48,6 +49,15 @@ describe('P7 Separated Werewolf Demo Mode (Lobby, Minimum-Guarantee Shuffle, Kic
 
     const code = generateWerewolfRoomCode();
     expect(code).toMatch(/^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{4}$/);
+
+    // Every role provides actionable verification steps so players understand what mechanism they test
+    for (const role of ['citizen', 'expert-candidate', 'organization', 'government'] as const) {
+      expect(WEREWOLF_MISSIONS[role].steps.length).toBeGreaterThanOrEqual(3);
+      for (const step of WEREWOLF_MISSIONS[role].steps) {
+        expect(step.action.length).toBeGreaterThan(5);
+        expect(step.verificationPoint.length).toBeGreaterThan(5);
+      }
+    }
   });
 
   it('runs a full classroom werewolf session: operator create -> join -> kick -> guaranteed shuffle -> session role switch -> late join -> close', async () => {
@@ -182,6 +192,18 @@ describe('P7 Separated Werewolf Demo Mode (Lobby, Minimum-Guarantee Shuffle, Kic
     expect(lateBody.lateJoined).toBe(true);
     expect(lateBody.assignment.assignedRole).toBe('citizen');
     expect(lateBody.assignment.missionHint.length).toBeGreaterThan(10);
+
+    // Operator sees live 7-mechanism classroom verification coverage; participants do not
+    const opStateRes = await werewolfStateGet(
+      new Request('http://localhost:3000/api/werewolf/state', { headers: { cookie: operatorCookie } })
+    );
+    const opStateBody = (await opStateRes.json()) as {
+      isOperator: boolean;
+      verificationCoverage: { totalCount: number; items: { id: string }[] } | null;
+    };
+    expect(opStateBody.isOperator).toBe(true);
+    expect(opStateBody.verificationCoverage?.totalCount).toBe(7);
+    expect(opStateBody.verificationCoverage?.items).toHaveLength(7);
 
     // Operator closes the room cleanly
     const closeRes = await werewolfRoomsPost(

@@ -4,7 +4,6 @@ import Link from 'next/link';
 import { useCallback, useEffect, useState, useTransition } from 'react';
 import {
   VENUE_TAGS,
-  WEREWOLF_MISSIONS,
   type DemoAccountRecord,
   type PublicApprovalVisibilityMode,
   type PublicVenueProfileView,
@@ -25,6 +24,7 @@ import { VenueOperatorPanel } from './components/venue-operator-panel';
 import { VenueOrganizationPanel } from './components/venue-organization-panel';
 import { VenueGovernmentPanel } from './components/venue-government-panel';
 import { VenueVerticalActions } from './components/venue-vertical-actions';
+import { WerewolfMissionChecklist } from './components/werewolf-mission-checklist';
 
 export interface InitialVenuePageData {
   authenticated: boolean;
@@ -439,26 +439,14 @@ export function VenueEntryClient({ initialData }: { initialData: InitialVenuePag
         ) : (
           <div className="dashboard-shell">
             {data.mode === 'werewolf' && data.werewolfAssignment && (
-              <section className="werewolf-mission-card">
-                <div className="dashboard-hero-head">
-                  <div>
-                    <span className="badge badge-ok">
-                      人狼モード進行中 · ルーム {data.werewolfAssignment.room.code}
-                    </span>{' '}
-                    <span className="badge badge-public">
-                      配役：{WEREWOLF_MISSIONS[data.werewolfAssignment.assignment.assignedRole].label}
-                    </span>
-                    <div style={{ fontWeight: 700, marginTop: 6 }}>
-                      ミッション：
-                      {data.werewolfAssignment.assignment.missionHint ||
-                        WEREWOLF_MISSIONS[data.werewolfAssignment.assignment.assignedRole].mission}
-                    </div>
-                  </div>
-                  <Link href="/werewolf" className="btn-link">
-                    人狼ロビーへ戻る
-                  </Link>
-                </div>
-              </section>
+              <WerewolfMissionChecklist
+                room={data.werewolfAssignment.room}
+                assignment={data.werewolfAssignment.assignment}
+                account={data.account}
+                publicProfile={data.publicProfile}
+                notifications={data.notifications}
+                snapshot={data.snapshot}
+              />
             )}
 
             <section className="card dashboard-hero">

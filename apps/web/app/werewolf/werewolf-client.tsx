@@ -8,6 +8,7 @@ import type {
   WerewolfRoomRecord,
   WerewolfRoomState
 } from '../../../../db/venue-store';
+import type { ClassroomVerificationCoverage } from '../../lib/werewolf-coverage';
 
 export interface WerewolfStatePayload {
   authenticated: boolean;
@@ -19,6 +20,7 @@ export interface WerewolfStatePayload {
   myAssignment: WerewolfAssignmentRecord | null;
   participantCount: number;
   participantNames: readonly string[];
+  verificationCoverage?: ClassroomVerificationCoverage | null;
 }
 
 export function WerewolfClient({ initialState }: { initialState: WerewolfStatePayload }) {
@@ -206,8 +208,18 @@ export function WerewolfClient({ initialState }: { initialState: WerewolfStatePa
                     あなたの役柄：{assignedMission.label}
                   </h2>
                   <p style={{ fontSize: '1rem', fontWeight: 600 }}>{state.myAssignment.missionHint || assignedMission.mission}</p>
+                  <div className="werewolf-checklist" style={{ marginTop: 10, marginBottom: 12 }}>
+                    {assignedMission.steps.map((s, idx) => (
+                      <div key={s.id} className="werewolf-check-item">
+                        <div className="werewolf-check-title">
+                          <span className="badge badge-sim">Step {idx + 1}</span> <strong>{s.action}</strong>
+                        </div>
+                        <div className="muted-sm">検証ポイント：{s.verificationPoint}</div>
+                      </div>
+                    ))}
+                  </div>
                   <p className="muted-sm">
-                    ※セッションはサーバー側 HttpOnly Cookie で既に切り替わっています。下のボタンからそのまま専用ダッシュボードへ入れます。
+                    ※ダッシュボードへ入ると、各ステップの達成状況がリアルタイムで自動チェックされます。
                   </p>
                   <div className="feed-actions">
                     <Link href="/" className="btn-link" style={{ background: '#2c523e', color: '#ffffff', borderColor: '#1f3c2d' }}>
@@ -402,6 +414,41 @@ export function WerewolfClient({ initialState }: { initialState: WerewolfStatePa
 
                 {closedRooms.length > 0 && (
                   <p className="muted-sm">終了済みルーム：{closedRooms.map((r) => r.room.code).join(', ')}</p>
+                )}
+
+                {state.verificationCoverage && (
+                  <div className="feed-item" style={{ background: '#ffffff', marginTop: 4 }}>
+                    <div className="notif-head" style={{ marginBottom: 8 }}>
+                      <strong>教室全体の機能検証カバレッジ（リアルタイム）</strong>
+                      <span
+                        className={`badge ${
+                          state.verificationCoverage.verifiedCount === state.verificationCoverage.totalCount
+                            ? 'badge-ok'
+                            : 'badge-warn'
+                        }`}
+                      >
+                        {state.verificationCoverage.verifiedCount} / {state.verificationCoverage.totalCount} 機構 検証済み
+                      </span>
+                    </div>
+                    <div className="werewolf-checklist" style={{ marginTop: 0 }}>
+                      {state.verificationCoverage.items.map((item) => (
+                        <div
+                          key={item.id}
+                          className={`werewolf-check-item ${item.verified ? 'werewolf-check-done' : ''}`}
+                        >
+                          <div className="werewolf-check-title">
+                            <span className={`badge ${item.verified ? 'badge-ok' : 'badge-sim'}`}>
+                              {item.verified ? '✓ 検証済み' : '未発火'}
+                            </span>{' '}
+                            <strong>{item.label}</strong>
+                          </div>
+                          <div className="muted-sm">
+                            {item.mechanism}（{item.detail}）
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 )}
               </div>
             )}
