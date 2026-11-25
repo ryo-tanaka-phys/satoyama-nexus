@@ -283,6 +283,11 @@ describe.runIf(Boolean(DB_URL))('M3 AI Review + PostGIS persistence round-trip',
     const targetUrl = new URL(baseUrl.toString());
     targetUrl.pathname = `/${tempDb}`;
     const pool = new pg.Pool({ connectionString: targetUrl.toString() });
+    // Cleanup terminates lingering backends of the temp DB; a closing idle client may then emit
+    // 57P01 (admin shutdown). Handle it here so it is not reported as an uncaught exception.
+    pool.on('error', (err: Error & { code?: string }) => {
+      if (err.code !== '57P01') throw err;
+    });
 
     try {
       const migrations = await loadMigrationFiles(resolve(process.cwd(), 'db/migrations'));
