@@ -44,3 +44,5 @@ export * from './auth-review-audit';
 export * from './repository';
 
 export * from './venue';
+
+export * from './werewolf';

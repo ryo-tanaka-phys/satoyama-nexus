@@ -932,3 +932,23 @@ code {
   flex-direction: column;
   gap: 16px;
 }
+
+
+/* === P7 Werewolf Mode Lobby & Mission Card Styles === */
+.werewolf-room-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 1.5rem;
+  font-weight: 900;
+  letter-spacing: 0.2em;
+  background: #213e30;
+  color: #ffffff;
+  padding: 4px 14px;
+  border-radius: 8px;
+}
+
+.werewolf-mission-card {
+  background: linear-gradient(135deg, #eef6e6 0%, #f8fbff 100%);
+  border: 2px solid #526c35;
+  border-radius: 10px;
+  padding: 16px 18px;
+}

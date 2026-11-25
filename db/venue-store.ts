@@ -3,13 +3,17 @@ import { resolve } from 'node:path';
 import type { Pool } from 'pg';
 import {
   defaultGrantsForRoleTrack,
+  drawShuffledWerewolfRoles,
   evaluateCorporateSupportPlans,
+  generateWerewolfRoomCode,
   resolveGridCellCoordinates,
   resolveVenueServerAuthContext,
   toPublicVenueProfile,
   toStructuredVenueMatchingInput,
   validateVenueTags,
+  WEREWOLF_MISSIONS,
   type Actor,
+  type WerewolfAssignedRole,
   type CorporateSponsorRecord,
   type CorporateSupportPlanRecord,
   type DemoAccountRecord,
@@ -357,6 +361,30 @@ export interface UpdateOwnProfileInput {
   seekingMatch?: boolean;
 }
 
+export type WerewolfRoomStatus = 'lobby' | 'assigned' | 'closed';
+
+export interface WerewolfRoomRecord {
+  id: string;
+  code: string;
+  operatorAccountId: string;
+  status: WerewolfRoomStatus;
+  createdAt: string;
+}
+
+export interface WerewolfAssignmentRecord {
+  roomId: string;
+  accountId: string;
+  displayName: string;
+  assignedRole: WerewolfAssignedRole;
+  missionHint: string;
+  assignedAt: string;
+}
+
+export interface WerewolfRoomState {
+  room: WerewolfRoomRecord;
+  participants: readonly WerewolfAssignmentRecord[];
+}
+
 export interface VenueFoundationStorePort {
   ensureSeeded(): Promise<void>;
   getFoundationSnapshot(): Promise<VenueFoundationSnapshot>;
@@ -441,6 +469,85 @@ export interface VenueFoundationStorePort {
     nowIso?: string
   ): Promise<readonly CorporateSupportOfferRecord[]>;
   acknowledgeCorporateOffer(offerId: string, targetActorId: string): Promise<boolean>;
+  createWerewolfRoom(operatorAccountId: string, nowIso?: string): Promise<WerewolfRoomRecord>;
+  listWerewolfRooms(): Promise<readonly WerewolfRoomState[]>;
+  getWerewolfRoomStateByCodeOrId(codeOrId: string): Promise<WerewolfRoomState | null>;
+  getWerewolfAssignmentForAccount(
+    roomId: string,
+    accountId: string
+  ): Promise<{ room: WerewolfRoomRecord; assignment: WerewolfAssignmentRecord } | null>;
+  joinWerewolfRoom(
+    input: { roomCode: string; displayName: string },
+    nowIso?: string
+  ): Promise<{
+    rawToken: string;
+    room: WerewolfRoomRecord;
+    account: DemoAccountRecord;
+    assignment: WerewolfAssignmentRecord;
+    lateJoined: boolean;
+  }>;
+  kickWerewolfParticipant(roomId: string, targetAccountId: string): Promise<boolean>;
+  assignWerewolfRoomRoles(
+    input: { roomId: string; operatorAccountId: string; rng?: () => number },
+    nowIso?: string
+  ): Promise<{ room: WerewolfRoomRecord; assignments: readonly WerewolfAssignmentRecord[]; auditEvent: VenueAuditEventRecord }>;
+  closeWerewolfRoom(
+    roomId: string,
+    operatorAccountId: string,
+    nowIso?: string
+  ): Promise<{ room: WerewolfRoomRecord; auditEvent: VenueAuditEventRecord }>;
+}
+
+function werewolfRoleToRoleTrack(role: WerewolfAssignedRole): VenueRoleTrack {
+  switch (role) {
+    case 'government':
+      return 'government';
+    case 'organization':
+      return 'organization';
+    case 'expert-candidate':
+    case 'citizen':
+    default:
+      return 'citizen';
+  }
+}
+
+function werewolfDefaultTags(role: WerewolfAssignedRole): {
+  interestTags: VenueTag[];
+  strengthTags: VenueTag[];
+  gridCellId: string;
+  seekingMatch: boolean;
+} {
+  switch (role) {
+    case 'organization':
+      return {
+        interestTags: ['竹林整備', '歩道整備', '安全管理'],
+        strengthTags: ['竹林整備', '地域調整'],
+        gridCellId: 'grid-r1-c2',
+        seekingMatch: false
+      };
+    case 'expert-candidate':
+      return {
+        interestTags: ['植生観察', '安全管理'],
+        strengthTags: ['植生観察', '安全管理', '記録/GIS'],
+        gridCellId: 'grid-r1-c1',
+        seekingMatch: false
+      };
+    case 'government':
+      return {
+        interestTags: ['地域調整', '安全管理'],
+        strengthTags: ['地域調整'],
+        gridCellId: 'grid-r2-c1',
+        seekingMatch: false
+      };
+    case 'citizen':
+    default:
+      return {
+        interestTags: ['自然観察会', '水辺保全', '竹林整備'],
+        strengthTags: ['広報'],
+        gridCellId: 'grid-r2-c2',
+        seekingMatch: true
+      };
+  }
 }
 
 function haversineDistanceMeters(
@@ -556,6 +663,8 @@ export class InMemoryVenueFoundationStore implements VenueFoundationStorePort {
   private publicInteractions: PublicInteractionRecord[] = [];
   private publicInteractionEvents: PublicInteractionEventRecord[] = [];
   private corporateOffers: CorporateSupportOfferRecord[] = [];
+  private werewolfRooms: WerewolfRoomRecord[] = [];
+  private werewolfAssignments: WerewolfAssignmentRecord[] = [];
   private seq = 1;
 
   async ensureSeeded(): Promise<void> {
@@ -1767,6 +1876,258 @@ export class InMemoryVenueFoundationStore implements VenueFoundationStorePort {
     );
 
     return { ok: true, interaction: structuredClone(item), auditEvent };
+  }
+
+  async createWerewolfRoom(
+    operatorAccountId: string,
+    nowIso = new Date().toISOString()
+  ): Promise<WerewolfRoomRecord> {
+    await this.ensureSeeded();
+    let code = generateWerewolfRoomCode();
+    while (this.werewolfRooms.some((r) => r.code === code)) {
+      code = generateWerewolfRoomCode();
+    }
+    const room: WerewolfRoomRecord = {
+      id: `ww-room-${Date.now().toString(36)}-${this.seq++}`,
+      code,
+      operatorAccountId,
+      status: 'lobby',
+      createdAt: nowIso
+    };
+    this.werewolfRooms.unshift(room);
+    await this.recordVenueAuditEvent(
+      {
+        actorAccountId: operatorAccountId,
+        action: 'werewolf.room.create',
+        targetId: room.id,
+        outcome: 'allowed',
+        reasonCode: 'WEREWOLF_ROOM_CREATED',
+        detailSummary: { code: room.code }
+      },
+      nowIso
+    );
+    return structuredClone(room);
+  }
+
+  async listWerewolfRooms(): Promise<readonly WerewolfRoomState[]> {
+    await this.ensureSeeded();
+    return this.werewolfRooms.map((room) => ({
+      room: structuredClone(room),
+      participants: structuredClone(this.werewolfAssignments.filter((a) => a.roomId === room.id))
+    }));
+  }
+
+  async getWerewolfRoomStateByCodeOrId(codeOrId: string): Promise<WerewolfRoomState | null> {
+    await this.ensureSeeded();
+    const key = codeOrId.trim().toUpperCase();
+    const room = this.werewolfRooms.find((r) => r.id === codeOrId.trim() || r.code.toUpperCase() === key);
+    if (!room) return null;
+    return {
+      room: structuredClone(room),
+      participants: structuredClone(this.werewolfAssignments.filter((a) => a.roomId === room.id))
+    };
+  }
+
+  async getWerewolfAssignmentForAccount(
+    roomId: string,
+    accountId: string
+  ): Promise<{ room: WerewolfRoomRecord; assignment: WerewolfAssignmentRecord } | null> {
+    await this.ensureSeeded();
+    const room = this.werewolfRooms.find((r) => r.id === roomId);
+    const assignment = this.werewolfAssignments.find((a) => a.roomId === roomId && a.accountId === accountId);
+    if (!room || !assignment) return null;
+    return { room: structuredClone(room), assignment: structuredClone(assignment) };
+  }
+
+  async joinWerewolfRoom(
+    input: { roomCode: string; displayName: string },
+    nowIso = new Date().toISOString()
+  ): Promise<{
+    rawToken: string;
+    room: WerewolfRoomRecord;
+    account: DemoAccountRecord;
+    assignment: WerewolfAssignmentRecord;
+    lateJoined: boolean;
+  }> {
+    await this.ensureSeeded();
+    const normalizedCode = input.roomCode.trim().toUpperCase();
+    const displayName = input.displayName.trim();
+    if (!displayName) throw new Error('参加ニックネームを入力してください。');
+    const room = this.werewolfRooms.find((r) => r.code.toUpperCase() === normalizedCode);
+    if (!room) throw new Error(`ルームコード「${normalizedCode}」が見つかりません。`);
+    if (room.status === 'closed') throw new Error('このルームはすでに終了しています。');
+
+    const lateJoined = room.status === 'assigned';
+    const initialDefaults = werewolfDefaultTags('citizen');
+    const created = await this.registerAccountAndCreateSession(
+      {
+        displayName,
+        roleTrack: 'citizen',
+        gridCellId: initialDefaults.gridCellId,
+        interestTags: initialDefaults.interestTags,
+        strengthTags: initialDefaults.strengthTags,
+        bio: `【人狼モード参加者】ルーム ${room.code} から参加`,
+        seekingMatch: true,
+        mode: 'werewolf',
+        werewolfRoomId: room.id
+      },
+      nowIso
+    );
+
+    const assignment: WerewolfAssignmentRecord = {
+      roomId: room.id,
+      accountId: created.account.id,
+      displayName,
+      assignedRole: 'citizen',
+      missionHint: lateJoined ? WEREWOLF_MISSIONS.citizen.mission : '',
+      assignedAt: nowIso
+    };
+    this.werewolfAssignments.push(assignment);
+
+    return {
+      rawToken: created.rawToken,
+      room: structuredClone(room),
+      account: created.account,
+      assignment: structuredClone(assignment),
+      lateJoined
+    };
+  }
+
+  async kickWerewolfParticipant(roomId: string, targetAccountId: string): Promise<boolean> {
+    await this.ensureSeeded();
+    const idx = this.werewolfAssignments.findIndex(
+      (a) => a.roomId === roomId && a.accountId === targetAccountId
+    );
+    if (idx < 0) return false;
+    this.werewolfAssignments.splice(idx, 1);
+    // Revoke their active session cleanly
+    for (const s of this.sessions.values()) {
+      if (s.accountId === targetAccountId && s.werewolfRoomId === roomId) {
+        s.revokedAt = new Date().toISOString();
+      }
+    }
+    return true;
+  }
+
+  async assignWerewolfRoomRoles(
+    input: { roomId: string; operatorAccountId: string; rng?: () => number },
+    nowIso = new Date().toISOString()
+  ): Promise<{ room: WerewolfRoomRecord; assignments: readonly WerewolfAssignmentRecord[]; auditEvent: VenueAuditEventRecord }> {
+    await this.ensureSeeded();
+    const room = this.werewolfRooms.find((r) => r.id === input.roomId);
+    if (!room) throw new Error('対象のルームが見つかりません。');
+    if (room.status === 'closed') throw new Error('終了済みのルームでは抽選できません。');
+
+    const participants = this.werewolfAssignments.filter((a) => a.roomId === room.id);
+    if (participants.length === 0) throw new Error('待機中の参加者が0名のため抽選できません。');
+
+    const drawnRoles = drawShuffledWerewolfRoles(participants.length, input.rng);
+
+    for (let i = 0; i < participants.length; i++) {
+      const p = participants[i];
+      const role = drawnRoles[i];
+      const missionInfo = WEREWOLF_MISSIONS[role];
+      p.assignedRole = role;
+      p.missionHint = missionInfo.mission;
+      p.assignedAt = nowIso;
+
+      const acct = this.accounts.get(p.accountId);
+      if (!acct) continue;
+
+      const roleTrack = werewolfRoleToRoleTrack(role);
+      const defaults = werewolfDefaultTags(role);
+      acct.roleTrack = roleTrack;
+      acct.grants = defaultGrantsForRoleTrack(roleTrack);
+
+      const actor = this.actors.find((a) => a.id === acct.actorId);
+      if (actor) {
+        actor.kind = actorKindForRoleTrack(roleTrack);
+        actor.displayName = `${p.displayName}（${missionInfo.shortBadge}）`;
+        actor.expertise = defaults.strengthTags.map((label) => ({ label, evidence: null }));
+      }
+      acct.displayName = `${p.displayName}（${missionInfo.shortBadge}）`;
+
+      const profile = this.profiles.get(acct.actorId);
+      if (profile) {
+        profile.gridCellId = defaults.gridCellId;
+        profile.interestTags = defaults.interestTags;
+        profile.strengthTags = defaults.strengthTags;
+        profile.seekingMatch = defaults.seekingMatch;
+        profile.orgCertificationStatus = 'none';
+        profile.expertCertified = false;
+        profile.expertCertificationNote = null;
+        profile.updatedAt = nowIso;
+      }
+
+      // Auto-attach 2 dummy members for assigned organization roles (owner decision ④A)
+      if (role === 'organization') {
+        const existingDummyCount = this.memberships.filter(
+          (m) => m.organizationActorId === acct.actorId && m.isDummy
+        ).length;
+        if (existingDummyCount === 0) {
+          await this.addDummyOrgMember({ organizationActorId: acct.actorId, displayName: '元岡 整備メンバー', roleNote: '竹林整備班' }, nowIso);
+          await this.addDummyOrgMember({ organizationActorId: acct.actorId, displayName: '周船寺 記録メンバー', roleNote: '記録・会計班' }, nowIso);
+        }
+      }
+
+      this.notifications.unshift({
+        id: `notif-${Date.now().toString(36)}-${this.seq++}`,
+        recipientActorId: acct.actorId,
+        category: 'certification',
+        title: `【人狼モード配役確定】あなたの役柄：${missionInfo.label}`,
+        body: missionInfo.mission,
+        referenceId: room.id,
+        isRead: false,
+        createdAt: nowIso
+      });
+    }
+
+    room.status = 'assigned';
+
+    const auditEvent = await this.recordVenueAuditEvent(
+      {
+        actorAccountId: input.operatorAccountId,
+        action: 'werewolf.room.assign',
+        targetId: room.id,
+        outcome: 'allowed',
+        reasonCode: 'WEREWOLF_ROLES_ASSIGNED',
+        detailSummary: {
+          code: room.code,
+          participantCount: participants.length,
+          roles: drawnRoles
+        }
+      },
+      nowIso
+    );
+
+    return {
+      room: structuredClone(room),
+      assignments: structuredClone(participants),
+      auditEvent
+    };
+  }
+
+  async closeWerewolfRoom(
+    roomId: string,
+    operatorAccountId: string,
+    nowIso = new Date().toISOString()
+  ): Promise<{ room: WerewolfRoomRecord; auditEvent: VenueAuditEventRecord }> {
+    await this.ensureSeeded();
+    const room = this.werewolfRooms.find((r) => r.id === roomId);
+    if (!room) throw new Error('対象のルームが見つかりません。');
+    room.status = 'closed';
+    const auditEvent = await this.recordVenueAuditEvent(
+      {
+        actorAccountId: operatorAccountId,
+        action: 'werewolf.room.close',
+        targetId: room.id,
+        outcome: 'allowed',
+        reasonCode: 'WEREWOLF_ROOM_CLOSED',
+        detailSummary: { code: room.code }
+      },
+      nowIso
+    );
+    return { room: structuredClone(room), auditEvent };
   }
 }
 
@@ -4170,6 +4531,330 @@ export class PgVenueFoundationStore implements VenueFoundationStorePort {
         latestDecisionReason: reason,
         decidedByAccountId: input.actorAccountId,
         decidedAt: nowIso,
+        createdAt: r.created_at
+      },
+      auditEvent
+    };
+  }
+
+  async createWerewolfRoom(
+    operatorAccountId: string,
+    nowIso = new Date().toISOString()
+  ): Promise<WerewolfRoomRecord> {
+    await this.ensureSeeded();
+    const id = `ww-room-${Date.now().toString(36)}-${generateSessionToken().slice(0, 6)}`;
+    let code = generateWerewolfRoomCode();
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const exists = await this.pool.query('SELECT 1 FROM simulation.demo_werewolf_room WHERE code = $1', [code]);
+      if (exists.rowCount === 0) break;
+      code = generateWerewolfRoomCode();
+    }
+    await this.pool.query(
+      `INSERT INTO simulation.demo_werewolf_room (id, code, operator_account_id, status, created_at)
+       VALUES ($1,$2,$3,'lobby',$4::timestamptz)`,
+      [id, code, operatorAccountId, nowIso]
+    );
+    await this.recordVenueAuditEvent(
+      {
+        actorAccountId: operatorAccountId,
+        action: 'werewolf.room.create',
+        targetId: id,
+        outcome: 'allowed',
+        reasonCode: 'WEREWOLF_ROOM_CREATED',
+        detailSummary: { code }
+      },
+      nowIso
+    );
+    return { id, code, operatorAccountId, status: 'lobby', createdAt: nowIso };
+  }
+
+  async listWerewolfRooms(): Promise<readonly WerewolfRoomState[]> {
+    await this.ensureSeeded();
+    const [roomRes, assignRes] = await Promise.all([
+      this.pool.query<{
+        id: string;
+        code: string;
+        operator_account_id: string;
+        status: WerewolfRoomStatus;
+        created_at: string;
+      }>('SELECT id, code, operator_account_id, status, created_at::text FROM simulation.demo_werewolf_room ORDER BY created_at DESC'),
+      this.pool.query<{
+        room_id: string;
+        account_id: string;
+        display_name: string;
+        assigned_role: WerewolfAssignedRole;
+        mission_hint: string;
+        assigned_at: string;
+      }>(
+        `SELECT wa.room_id, wa.account_id, a.display_name, wa.assigned_role, wa.mission_hint, wa.assigned_at::text
+         FROM simulation.demo_werewolf_assignment wa
+         JOIN simulation.demo_account a ON a.id = wa.account_id
+         ORDER BY wa.assigned_at ASC`
+      )
+    ]);
+
+    return roomRes.rows.map((r) => ({
+      room: {
+        id: r.id,
+        code: r.code,
+        operatorAccountId: r.operator_account_id,
+        status: r.status,
+        createdAt: r.created_at
+      },
+      participants: assignRes.rows
+        .filter((a) => a.room_id === r.id)
+        .map((a) => ({
+          roomId: a.room_id,
+          accountId: a.account_id,
+          displayName: a.display_name,
+          assignedRole: a.assigned_role,
+          missionHint: a.mission_hint,
+          assignedAt: a.assigned_at
+        }))
+    }));
+  }
+
+  async getWerewolfRoomStateByCodeOrId(codeOrId: string): Promise<WerewolfRoomState | null> {
+    await this.ensureSeeded();
+    const all = await this.listWerewolfRooms();
+    const key = codeOrId.trim().toUpperCase();
+    return all.find((s) => s.room.id === codeOrId.trim() || s.room.code.toUpperCase() === key) ?? null;
+  }
+
+  async getWerewolfAssignmentForAccount(
+    roomId: string,
+    accountId: string
+  ): Promise<{ room: WerewolfRoomRecord; assignment: WerewolfAssignmentRecord } | null> {
+    await this.ensureSeeded();
+    const state = await this.getWerewolfRoomStateByCodeOrId(roomId);
+    if (!state) return null;
+    const assignment = state.participants.find((p) => p.accountId === accountId);
+    if (!assignment) return null;
+    return { room: state.room, assignment };
+  }
+
+  async joinWerewolfRoom(
+    input: { roomCode: string; displayName: string },
+    nowIso = new Date().toISOString()
+  ): Promise<{
+    rawToken: string;
+    room: WerewolfRoomRecord;
+    account: DemoAccountRecord;
+    assignment: WerewolfAssignmentRecord;
+    lateJoined: boolean;
+  }> {
+    await this.ensureSeeded();
+    const normalizedCode = input.roomCode.trim().toUpperCase();
+    const displayName = input.displayName.trim();
+    if (!displayName) throw new Error('参加ニックネームを入力してください。');
+    const state = await this.getWerewolfRoomStateByCodeOrId(normalizedCode);
+    if (!state) throw new Error(`ルームコード「${normalizedCode}」が見つかりません。`);
+    if (state.room.status === 'closed') throw new Error('このルームはすでに終了しています。');
+
+    const lateJoined = state.room.status === 'assigned';
+    const defaults = werewolfDefaultTags('citizen');
+    const created = await this.registerAccountAndCreateSession(
+      {
+        displayName,
+        roleTrack: 'citizen',
+        gridCellId: defaults.gridCellId,
+        interestTags: defaults.interestTags,
+        strengthTags: defaults.strengthTags,
+        bio: `【人狼モード参加者】ルーム ${state.room.code} から参加`,
+        seekingMatch: true,
+        mode: 'werewolf',
+        werewolfRoomId: state.room.id
+      },
+      nowIso
+    );
+
+    const missionHint = lateJoined ? WEREWOLF_MISSIONS.citizen.mission : '';
+    await this.pool.query(
+      `INSERT INTO simulation.demo_werewolf_assignment (room_id, account_id, assigned_role, mission_hint, assigned_at)
+       VALUES ($1,$2,'citizen',$3,$4::timestamptz)`,
+      [state.room.id, created.account.id, missionHint, nowIso]
+    );
+
+    return {
+      rawToken: created.rawToken,
+      room: state.room,
+      account: created.account,
+      assignment: {
+        roomId: state.room.id,
+        accountId: created.account.id,
+        displayName,
+        assignedRole: 'citizen',
+        missionHint,
+        assignedAt: nowIso
+      },
+      lateJoined
+    };
+  }
+
+  async kickWerewolfParticipant(roomId: string, targetAccountId: string): Promise<boolean> {
+    await this.ensureSeeded();
+    const res = await this.pool.query(
+      'DELETE FROM simulation.demo_werewolf_assignment WHERE room_id = $1 AND account_id = $2',
+      [roomId, targetAccountId]
+    );
+    if ((res.rowCount ?? 0) === 0) return false;
+    await this.pool.query(
+      'UPDATE simulation.demo_session SET revoked_at = now() WHERE account_id = $1 AND werewolf_room_id = $2',
+      [targetAccountId, roomId]
+    );
+    return true;
+  }
+
+  async assignWerewolfRoomRoles(
+    input: { roomId: string; operatorAccountId: string; rng?: () => number },
+    nowIso = new Date().toISOString()
+  ): Promise<{ room: WerewolfRoomRecord; assignments: readonly WerewolfAssignmentRecord[]; auditEvent: VenueAuditEventRecord }> {
+    await this.ensureSeeded();
+    const state = await this.getWerewolfRoomStateByCodeOrId(input.roomId);
+    if (!state) throw new Error('対象のルームが見つかりません。');
+    if (state.room.status === 'closed') throw new Error('終了済みのルームでは抽選できません。');
+    if (state.participants.length === 0) throw new Error('待機中の参加者が0名のため抽選できません。');
+
+    const drawnRoles = drawShuffledWerewolfRoles(state.participants.length, input.rng);
+    const updatedAssignments: WerewolfAssignmentRecord[] = [];
+
+    for (let i = 0; i < state.participants.length; i++) {
+      const p = state.participants[i];
+      const role = drawnRoles[i];
+      const missionInfo = WEREWOLF_MISSIONS[role];
+      const roleTrack = werewolfRoleToRoleTrack(role);
+      const defaults = werewolfDefaultTags(role);
+      const grants = defaultGrantsForRoleTrack(roleTrack);
+      const coords = resolveGridCellCoordinates(defaults.gridCellId);
+
+      const acctRes = await this.pool.query<{ actor_id: string }>(
+        'SELECT actor_id FROM simulation.demo_account WHERE id = $1',
+        [p.accountId]
+      );
+      const actorId = acctRes.rows[0]?.actor_id;
+      if (!actorId) continue;
+
+      const baseName = p.displayName.replace(/（[^（）]+）$/, '');
+      const titledName = `${baseName}（${missionInfo.shortBadge}）`;
+
+      await this.pool.query(
+        `UPDATE simulation.demo_account SET display_name = $2, role_track = $3, grants = $4::jsonb WHERE id = $1`,
+        [p.accountId, titledName, roleTrack, JSON.stringify(grants)]
+      );
+      await this.pool.query(
+        `UPDATE simulation.actor SET kind = $2, display_name = $3, expertise = $4::jsonb WHERE id = $1`,
+        [actorId, actorKindForRoleTrack(roleTrack), titledName, JSON.stringify(defaults.strengthTags.map((label) => ({ label, evidence: null })))]
+      );
+      await this.pool.query(
+        `UPDATE simulation.actor_profile
+         SET base_coordinates = ST_SetSRID(ST_MakePoint($2,$3),4326)::geography, willingness = $4
+         WHERE actor_id = $1`,
+        [actorId, coords.longitude, coords.latitude, defaults.seekingMatch ? 'explicit-interest' : 'open']
+      );
+      await this.pool.query(
+        `UPDATE simulation.venue_profile
+         SET grid_cell_id = $2, interest_tags = $3::jsonb, strength_tags = $4::jsonb,
+             seeking_match = $5, org_certification_status = 'none', expert_certified = false,
+             expert_certification_note = NULL, updated_at = $6::timestamptz
+         WHERE actor_id = $1`,
+        [actorId, defaults.gridCellId, JSON.stringify(defaults.interestTags), JSON.stringify(defaults.strengthTags), defaults.seekingMatch, nowIso]
+      );
+      await this.pool.query(
+        `UPDATE simulation.demo_werewolf_assignment
+         SET assigned_role = $3, mission_hint = $4, assigned_at = $5::timestamptz
+         WHERE room_id = $1 AND account_id = $2`,
+        [state.room.id, p.accountId, role, missionInfo.mission, nowIso]
+      );
+
+      if (role === 'organization') {
+        const dm = await this.pool.query<{ cnt: string }>(
+          'SELECT COUNT(*)::text AS cnt FROM simulation.actor_membership WHERE organization_actor_id = $1 AND is_dummy = true',
+          [actorId]
+        );
+        if (Number(dm.rows[0]?.cnt ?? '0') === 0) {
+          await this.addDummyOrgMember({ organizationActorId: actorId, displayName: '元岡 整備メンバー', roleNote: '竹林整備班' }, nowIso);
+          await this.addDummyOrgMember({ organizationActorId: actorId, displayName: '周船寺 記録メンバー', roleNote: '記録・会計班' }, nowIso);
+        }
+      }
+
+      const notifId = `notif-${Date.now().toString(36)}-${generateSessionToken().slice(0, 6)}`;
+      await this.pool.query(
+        `INSERT INTO simulation.venue_notification
+           (id, recipient_actor_id, category, title, body, reference_id, is_read, created_at)
+         VALUES ($1,$2,'certification',$3,$4,$5,false,$6::timestamptz)`,
+        [notifId, actorId, `【人狼モード配役確定】あなたの役柄：${missionInfo.label}`, missionInfo.mission, state.room.id, nowIso]
+      );
+
+      updatedAssignments.push({
+        roomId: state.room.id,
+        accountId: p.accountId,
+        displayName: titledName,
+        assignedRole: role,
+        missionHint: missionInfo.mission,
+        assignedAt: nowIso
+      });
+    }
+
+    await this.pool.query(
+      `UPDATE simulation.demo_werewolf_room SET status = 'assigned' WHERE id = $1`,
+      [state.room.id]
+    );
+
+    const auditEvent = await this.recordVenueAuditEvent(
+      {
+        actorAccountId: input.operatorAccountId,
+        action: 'werewolf.room.assign',
+        targetId: state.room.id,
+        outcome: 'allowed',
+        reasonCode: 'WEREWOLF_ROLES_ASSIGNED',
+        detailSummary: { code: state.room.code, participantCount: updatedAssignments.length, roles: drawnRoles }
+      },
+      nowIso
+    );
+
+    return {
+      room: { ...state.room, status: 'assigned' },
+      assignments: updatedAssignments,
+      auditEvent
+    };
+  }
+
+  async closeWerewolfRoom(
+    roomId: string,
+    operatorAccountId: string,
+    nowIso = new Date().toISOString()
+  ): Promise<{ room: WerewolfRoomRecord; auditEvent: VenueAuditEventRecord }> {
+    await this.ensureSeeded();
+    const res = await this.pool.query<{
+      id: string;
+      code: string;
+      operator_account_id: string;
+      status: WerewolfRoomStatus;
+      created_at: string;
+    }>(
+      `UPDATE simulation.demo_werewolf_room SET status = 'closed' WHERE id = $1
+       RETURNING id, code, operator_account_id, status, created_at::text`,
+      [roomId]
+    );
+    const r = res.rows[0];
+    if (!r) throw new Error('対象のルームが見つかりません。');
+    const auditEvent = await this.recordVenueAuditEvent(
+      {
+        actorAccountId: operatorAccountId,
+        action: 'werewolf.room.close',
+        targetId: r.id,
+        outcome: 'allowed',
+        reasonCode: 'WEREWOLF_ROOM_CLOSED',
+        detailSummary: { code: r.code }
+      },
+      nowIso
+    );
+    return {
+      room: {
+        id: r.id,
+        code: r.code,
+        operatorAccountId: r.operator_account_id,
+        status: r.status,
         createdAt: r.created_at
       },
       auditEvent

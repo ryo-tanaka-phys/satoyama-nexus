@@ -22,12 +22,21 @@ export async function GET(request: Request) {
       ? await store.listOrgChatMessages(resolved.account.actorId)
       : [];
 
+  const werewolfAssignment =
+    resolved.authenticated &&
+    resolved.account &&
+    resolved.session?.mode === 'werewolf' &&
+    resolved.session.werewolfRoomId
+      ? await store.getWerewolfAssignmentForAccount(resolved.session.werewolfRoomId, resolved.account.id)
+      : null;
+
   const publicApprovalVisibility =
     process.env.PUBLIC_APPROVAL_VISIBILITY === 'outcome-only' ? 'outcome-only' : 'full-process';
 
   return NextResponse.json({
     authenticated: resolved.authenticated,
     mode: resolved.session?.mode ?? null,
+    werewolfAssignment,
     account: resolved.account,
     publicProfile: resolved.profile ? toPublicVenueProfile(resolved.profile) : null,
     authSummary: resolved.authContext.authenticated
