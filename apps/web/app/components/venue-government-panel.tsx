@@ -166,6 +166,16 @@ export function VenueGovernmentPanel({
         <p className="muted-sm">
           認証済み市民団体から届いた要望・簡易レポートを審査し、理由付きで回答します。すべての判断過程は追記型履歴と監査ログに記録されます。
         </p>
+        <div className="card card-muted" style={{ marginBottom: 12, padding: '10px 14px' }}>
+          <span className={`badge ${visibilityPreview === 'full-process' ? 'badge-ok' : 'badge-public'}`}>
+            適用中：{visibilityPreview === 'full-process' ? 'デモ公開（過程すべて表示）' : '本番想定プレビュー（結果のみ表示）'}
+          </span>{' '}
+          <span className="muted-sm">
+            {visibilityPreview === 'full-process'
+              ? '申請・確認中・質問・承認・支援決定までの全ステップと理由を透明性ログとして一般表示します。'
+              : '内部監査ログ（ops_audit）に全過程を保全しつつ、一般画面には最終ステータスのみを公開する切替プレビューです。'}
+          </span>
+        </div>
 
         {incomingRequests.length === 0 ? (
           <p className="muted-sm">

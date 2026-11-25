@@ -17,9 +17,10 @@ main {
 }
 
 h1 {
-  font-size: clamp(1.9rem, 4.4vw, 3.1rem);
-  line-height: 1.28;
-  letter-spacing: 0.02em;
+  font-size: clamp(1.55rem, 3.2vw, 2.35rem);
+  line-height: 1.3;
+  letter-spacing: 0.01em;
+  text-wrap: balance;
   margin: 8px 0 12px;
 }
 
@@ -66,14 +67,21 @@ aside.phase-banner {
 
 .grid-2 {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
   gap: 16px;
 }
 
 .grid-3 {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
   gap: 14px;
+}
+
+.grid-2 > *,
+.grid-3 > *,
+.venue-entry-layout > *,
+.social-main-grid > * {
+  min-width: 0;
 }
 
 .card {
@@ -82,6 +90,12 @@ aside.phase-banner {
   border-radius: 10px;
   padding: 18px 20px;
   box-shadow: 0 1px 2px rgba(33, 62, 48, 0.04);
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+code {
+  overflow-wrap: anywhere;
 }
 
 .card-muted {
@@ -830,16 +844,25 @@ code {
 .comment-input-row {
   display: flex;
   gap: 6px;
+  flex-wrap: wrap;
 }
 
 .comment-input-row input {
-  flex: 1 1 auto;
+  flex: 1 1 140px;
+  min-width: 0;
   font: inherit;
   font-size: 0.86rem;
   padding: 6px 9px;
   border-radius: 6px;
   border: 1px solid #b5c4ae;
   background: #ffffff;
+}
+
+.comment-input-row button,
+.postal-row button,
+.btn-sm {
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .notif-list {
@@ -951,4 +974,17 @@ code {
   border: 2px solid #526c35;
   border-radius: 10px;
   padding: 16px 18px;
+}
+
+.werewolf-code-input {
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  font-weight: 700;
+  font-size: 1.05rem;
+}
+
+.werewolf-code-input::placeholder {
+  letter-spacing: normal;
+  font-weight: 400;
+  font-size: 0.92rem;
 }

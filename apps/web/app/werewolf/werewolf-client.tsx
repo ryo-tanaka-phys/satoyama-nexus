@@ -255,7 +255,7 @@ export function WerewolfClient({ initialState }: { initialState: WerewolfStatePa
                     value={roomCodeInput}
                     onChange={(e) => setRoomCodeInput(e.target.value.toUpperCase())}
                     placeholder="4文字コードを入力"
-                    style={{ textTransform: 'uppercase', letterSpacing: '0.18em', fontWeight: 700, fontSize: '1.1rem' }}
+                    className="werewolf-code-input"
                   />
                 </label>
                 <label className="field-group">

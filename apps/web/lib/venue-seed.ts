@@ -72,7 +72,7 @@ export function buildKyushuVenueSeed(): KyushuVenueSeed {
       id: 'sim-kyushu-org-demo',
       domain: 'simulation',
       kind: 'organization',
-      displayName: '【模擬】伊都里山みらいの会（団体認証待ち・デモ役）',
+      displayName: '【模擬】伊都里山みらいの会（デモ団体役）',
       expertise: [
         { label: '竹林整備', evidence: null },
         { label: '歩道整備', evidence: null }

@@ -30,7 +30,9 @@ export function KyushuGridPicker({
       return;
     }
     onSelectCell(matched.id);
-    setPostalMessage(`郵便番号から「${matched.label}」(${matched.id}) を選択しました。`);
+    setPostalMessage(
+      `郵便番号から「${matched.label}」(R${matched.row + 1}-C${matched.col + 1}) を選択しました。`
+    );
   }
 
   return (
@@ -88,7 +90,7 @@ export function KyushuGridPicker({
 
       {selectedCell && (
         <div className="grid-selected-summary">
-          <span className="badge badge-ok">選択中</span>{' '}
+          <span className="badge badge-ok">選択中 R{selectedCell.row + 1}-C{selectedCell.col + 1}</span>{' '}
           <strong>{selectedCell.label}</strong>（{selectedCell.areaNote}） — 内部座標:{' '}
           <code>
             {selectedCell.coordinates.latitude.toFixed(3)}, {selectedCell.coordinates.longitude.toFixed(3)} (SRID 4326)
