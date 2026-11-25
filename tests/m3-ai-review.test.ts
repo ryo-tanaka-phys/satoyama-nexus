@@ -347,12 +347,19 @@ describe.runIf(Boolean(DB_URL))('M3 AI Review + PostGIS persistence round-trip',
       });
       expect(commit.applied).toBe(true);
 
+      // Migration 0003: DB accepts the simulated 'responded' stage and still rejects unknown stages
+      await pool.query("UPDATE simulation.collaboration_case SET stage = 'responded' WHERE id = 'sim-case-m3'");
+      await expect(
+        pool.query("UPDATE simulation.collaboration_case SET stage = 'bogus' WHERE id = 'sim-case-m3'")
+      ).rejects.toThrow();
+
       const snap = await repo.loadSnapshot();
       expect(snap.aiRecommendations).toHaveLength(1);
       expect(snap.aiRecommendations[0].id).toBe('ai-rec-pg-1');
       expect(snap.aiRecommendations[0].status).toBe('requires-human-review');
       expect(snap.reviewRecords).toHaveLength(1);
       expect(snap.reviewRecords[0].aiRecommendationId).toBe('ai-rec-pg-1');
+      expect(snap.cases.find((c) => c.id === 'sim-case-m3')?.stage).toBe('responded');
       expect(snap.auditEvents.some((e) => e.operationId === 'op-pg-review-1' && e.outcome === 'allowed')).toBe(true);
     } finally {
       await pool.end();

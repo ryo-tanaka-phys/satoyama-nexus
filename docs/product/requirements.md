@@ -3,7 +3,7 @@
 
 ## 確定事項
 1. 里山保全を起点とする地域協働の実証用Webプラットフォーム。中心利用者は市民団体・一般市民・専門家。
-2. Private / ryo-tanaka-phys/satoyama-nexus / pnpm Monorepo / Next.js・TypeScript / PostgreSQL・PostGIS。
+2. Public（2026-11-25 オーナー判断で当初の Private から変更：GitHub アカウントを持たない関係者と共有する必要があるため）/ ryo-tanaka-phys/satoyama-nexus / pnpm Monorepo / Next.js・TypeScript / PostgreSQL・PostGIS。公開リポジトリのため秘密情報・個人情報・実在主体の非公開情報は従来以上に置かない。
 3. 実在する活動の公開情報と、架空の参加者・模擬案件・模擬合意を明確に分離する。
 4. AI一次推薦の後に人間の二次審査を行う。AIの出力だけで依頼・合意に進めない。
 5. Phase 1の依頼・応答・調整・合意・実施準備はすべて模擬処理。実際の外部連絡を行わない。
@@ -34,3 +34,4 @@ MapLibre、Playwright、自治体・国・企業・支援機関との将来連�
 公開活動fixtureは出典未調査のため空。推薦は決定的な模擬アダプターのみ。実AI、DB永続化、認証、審査操作画面、連絡手段は未実装。
 ## 変更履歴
 2026-11-14：既定事項を維持してM0基盤を作成。新規の事業要件の確定はしない。
+2026-11-25：オーナー判断（人手・時間の制約によるやむを得ない変更）。(a) 要件2をPublicへ変更。(b) 要件5の「応答」を模擬協働の独立段階 `responded` として追加し、段階語彙を draft → requested → responded → coordinating → agreed → preparing に変更（M0語彙の拡張）。(c) 要件4を実装で強制：人間二次審査は現行改訂のAI一次推薦を参照しなければ受け付けない。

@@ -603,6 +603,8 @@ export class SimulationWorkbench {
       requiredSkills: readonly string[];
       transportModes: readonly string[];
       itemsToConfirm?: readonly string[];
+      /** Local Asia/Tokyo datetime from <input type="datetime-local"> (YYYY-MM-DDTHH:mm). */
+      scheduleStartAt?: string | null;
     }
   ): { ok: true; activity: Activity; snapshot: WorkbenchSnapshot } | { ok: false; reasonCode: string; message: string } {
     const nowIso = this.nowIso();
@@ -628,11 +630,29 @@ export class SimulationWorkbench {
       title: title.startsWith('【模擬】') ? title : `【模擬】${title}`
     };
 
-    const hasCoords =
-      typeof input.latitude === 'number' &&
-      Number.isFinite(input.latitude) &&
-      typeof input.longitude === 'number' &&
-      Number.isFinite(input.longitude);
+    const hasLat = typeof input.latitude === 'number' && Number.isFinite(input.latitude);
+    const hasLng = typeof input.longitude === 'number' && Number.isFinite(input.longitude);
+    if (hasLat !== hasLng) {
+      return { ok: false, reasonCode: 'INVALID_LOCATION', message: '緯度と経度は両方入力するか、両方空欄にしてください。' };
+    }
+    if (
+      hasLat &&
+      ((input.latitude as number) < -90 || (input.latitude as number) > 90 ||
+        (input.longitude as number) < -180 || (input.longitude as number) > 180)
+    ) {
+      return { ok: false, reasonCode: 'INVALID_LOCATION', message: '緯度は -90〜90、経度は -180〜180 の範囲で入力してください。' };
+    }
+    const hasCoords = hasLat && hasLng;
+
+    const rawStart = input.scheduleStartAt?.trim() ?? '';
+    let scheduleStartIso: string | null = null;
+    if (rawStart) {
+      const candidate = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(rawStart) ? `${rawStart}:00+09:00` : rawStart;
+      if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?(Z|[+-]\d{2}:\d{2})$/.test(candidate) || !Number.isFinite(Date.parse(candidate))) {
+        return { ok: false, reasonCode: 'INVALID_SCHEDULE', message: '活動日時の形式が正しくありません。' };
+      }
+      scheduleStartIso = candidate;
+    }
 
     const loc: ActivityLocation = {
       id: `loc-${id}-a`,
@@ -660,7 +680,9 @@ export class SimulationWorkbench {
       target: { activityId: id, activityRevision: 1 },
       schedule: {
         timeZone: 'Asia/Tokyo',
-        dates: { state: 'not-stated' },
+        dates: scheduleStartIso
+          ? { state: 'specified', value: [{ startAt: scheduleStartIso, endAt: null, label: '模擬活動日（提案時入力）' }] }
+          : { state: 'not-stated' },
         timeWindowNote: { state: 'unknown', note: '模擬活動提案時に未確定として登録' }
       },
       skills:
@@ -942,7 +964,8 @@ export class SimulationWorkbench {
       const defaultNoteByStage: Record<CollaborationStage, string> = {
         draft: '模擬下書きを作成',
         requested: '模擬依頼を発行（外部への実連絡なし）',
-        coordinating: '模擬応答・日程および安全条件の調整を記録（外部連絡なし）',
+        responded: '模擬応答を記録（候補者の参加意向回答を模擬・外部連絡なし）',
+        coordinating: '日程および安全条件の模擬調整を記録（外部連絡なし）',
         agreed: '模擬合意を記録（法的拘束・実在主体の同意なし）',
         preparing: '模擬実施準備チェックリストを確認（Phase 1 完了段階）'
       };

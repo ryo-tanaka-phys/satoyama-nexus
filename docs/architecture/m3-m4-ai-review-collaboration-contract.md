@@ -6,8 +6,8 @@
   1. Public catalog vs. simulation data separation (public catalog remains empty/unregistered until verified sources exist).
   2. M2 provisional matching (`recommendSimulationCandidates`) over simulation actors only.
   3. M3 AI primary evaluation (`status: 'requires-human-review'`, `externalApiCalled: false`, never approves or transitions).
-  4. M1 human secondary review (`recordHumanReview`) with server-side `ServerAuthContext`, self-review prohibition (`SELF_REVIEW_PROHIBITED`), append-only `ReviewRecord` history, and material-change revision invalidation (`applyMaterialCaseChange`).
-  5. M4 sequential simulation collaboration transitions (`draft → requested → coordinating → agreed → preparing`) with simulated collaboration notes and append-only sanitized `AuditEvent` logs.
+  4. M1 human secondary review (`recordHumanReview`) with server-side `ServerAuthContext`, self-review prohibition (`SELF_REVIEW_PROHIBITED`), mandatory current-revision AI recommendation reference (`AI_RECOMMENDATION_REQUIRED`, requirement 4), append-only `ReviewRecord` history, and material-change revision invalidation (`applyMaterialCaseChange`).
+  5. M4 sequential simulation collaboration transitions (`draft → requested → responded → coordinating → agreed → preparing`; `responded` added by owner decision on 2026-11-25) with simulated collaboration notes and append-only sanitized `AuditEvent` logs.
 
 ## Phase 1 Non-Negotiable Invariants
 - No external AI SDK/API calls, no real external contact/email/notifications, and no real OAuth/session credentials.

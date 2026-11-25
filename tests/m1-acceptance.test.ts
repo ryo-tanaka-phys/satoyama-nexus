@@ -314,17 +314,24 @@ describe('M1-07 (#9) End-to-end M1 domain acceptance and M0 regression', () => {
       ).ok
     ).toBe(false);
 
-    // Re-approve rev 2 and traverse all M0 simulation stages sequentially
+    // Re-approve rev 2 (after a rev-2 AI primary recommendation) and traverse all simulation stages sequentially
+    state = {
+      ...state,
+      aiRecommendations: [
+        ...state.aiRecommendations,
+        { ...state.aiRecommendations[0], id: 'ai-2', caseRevision: 2, generatedAt: '2026-11-25T04:18:00Z' }
+      ]
+    };
     const app2 = recordHumanReview(
       state,
       reviewer,
-      { operationId: 'acc-r2', correlationId: 'c4', caseId: 'case-spring', expectedVersion: 2, decision: 'approved', reason: '変更後再承認', policyVersion: 'v1' },
+      { operationId: 'acc-r2', correlationId: 'c4', caseId: 'case-spring', expectedVersion: 2, decision: 'approved', reason: '変更後再承認', policyVersion: 'v1', aiRecommendationId: 'ai-2' },
       '2026-11-25T04:20:00Z'
     );
     if (!app2.ok) throw new Error('expected ok');
     state = app2.state;
 
-    for (const [idx, stage] of (['requested', 'coordinating', 'agreed', 'preparing'] as const).entries()) {
+    for (const [idx, stage] of (['requested', 'responded', 'coordinating', 'agreed', 'preparing'] as const).entries()) {
       const tr = transitionSimulationCase(
         state,
         editor,

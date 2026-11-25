@@ -233,6 +233,32 @@ describe('M1-05 (#7) Server authorization, untrusted client rejection, and self-
     expect(r2.ok).toBe(false);
     if (!r2.ok) expect(r2.reasonCode).toBe('SELF_REVIEW_PROHIBITED');
   });
+
+  it('requires an AI primary recommendation for the current revision before any human review (requirement 4)', () => {
+    const noAiState = { ...makeState(), aiRecommendations: [] };
+    for (const decision of ['approved', 'rejected'] as const) {
+      const res = recordHumanReview(
+        noAiState,
+        independentReviewerAuth,
+        { operationId: `op-noai-${decision}`, correlationId: 'c-noai', caseId: 'case-1', expectedVersion: 1, decision, reason: 'AIなし', policyVersion: 'p1' },
+        NOW
+      );
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.reasonCode).toBe('AI_RECOMMENDATION_REQUIRED');
+        expect(res.deniedAuditEvent.outcome).toBe('denied');
+      }
+    }
+    // Referencing an AI recommendation from another revision is rejected too
+    const stale = recordHumanReview(
+      makeState(),
+      independentReviewerAuth,
+      { operationId: 'op-noai-stale', correlationId: 'c-noai2', caseId: 'case-1', expectedVersion: 1, decision: 'approved', reason: '別rev参照', policyVersion: 'p1', aiRecommendationId: 'ai-rec-missing' },
+      NOW
+    );
+    expect(stale.ok).toBe(false);
+    if (!stale.ok) expect(stale.reasonCode).toBe('UNKNOWN_AI_RECOMMENDATION');
+  });
 });
 
 describe('M1-05 (#7) Append-only reviews, approval invalidation after material change, sequential stages, and idempotency', () => {
@@ -355,6 +381,13 @@ describe('M1-05 (#7) Append-only reviews, approval invalidation after material c
     if (!oldApprovalReuse.ok) expect(oldApprovalReuse.reasonCode).toBe('HUMAN_APPROVAL_REQUIRED');
 
     // 6) Approve rev 2 -> sequential transition draft -> requested succeeds + idempotent replay does not duplicate
+    state = {
+      ...state,
+      aiRecommendations: [
+        ...state.aiRecommendations,
+        { ...state.aiRecommendations[0], id: 'ai-rec-2', caseRevision: 2, generatedAt: '2026-11-25T04:14:00Z' }
+      ]
+    };
     const app2 = recordHumanReview(
       state,
       independentReviewerAuth,
@@ -365,7 +398,8 @@ describe('M1-05 (#7) Append-only reviews, approval invalidation after material c
         expectedVersion: 2,
         decision: 'approved',
         reason: '当事者追加後を再確認',
-        policyVersion: 'policy-v1'
+        policyVersion: 'policy-v1',
+        aiRecommendationId: 'ai-rec-2'
       },
       '2026-11-25T04:15:00Z'
     );
@@ -451,7 +485,7 @@ describe('M1-05 (#7) Atomic audit rollback, denied audit persistence, append-onl
     const allowedReview = recordHumanReview(
       initial,
       independentReviewerAuth,
-      { operationId: 'op-tx-1', correlationId: 'c-tx1', caseId: 'case-1', expectedVersion: 1, decision: 'approved', reason: 'ok', policyVersion: 'p1' },
+      { operationId: 'op-tx-1', correlationId: 'c-tx1', caseId: 'case-1', expectedVersion: 1, decision: 'approved', reason: 'ok', policyVersion: 'p1', aiRecommendationId: 'ai-rec-1' },
       NOW
     );
     await expect(executeWithAtomicAudit(failingAuditStore, allowedReview)).rejects.toThrow('Simulated audit storage failure');
