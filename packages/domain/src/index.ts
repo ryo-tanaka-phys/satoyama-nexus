@@ -42,3 +42,5 @@ export * from './location-conditions';
 export * from './auth-review-audit';
 
 export * from './repository';
+
+export * from './venue';

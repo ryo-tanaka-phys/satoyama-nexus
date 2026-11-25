@@ -15,7 +15,8 @@ describe('M1-06 (#8) Versioned SQL migration files static checks', () => {
       '0001_m1_schemas_and_catalog.sql',
       '0002_m1_simulation_and_audit.sql',
       '0003_add_responded_stage.sql',
-      '0004_m4_simulation_workbench_tables.sql'
+      '0004_m4_simulation_workbench_tables.sql',
+      '0005_m5_m6_simulated_venue.sql'
     ]);
     for (const f of files) {
       expect(f.checksum).toMatch(/^[a-f0-9]{64}$/);
