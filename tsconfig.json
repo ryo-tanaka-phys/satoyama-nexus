@@ -1,6 +1,8 @@
 {
   "extends": "./tsconfig.base.json",
   "include": [
+    "db/**/*.ts",
+    "db/**/*.d.ts",
     "tests/**/*.ts",
     "vitest.config.ts"
   ]
