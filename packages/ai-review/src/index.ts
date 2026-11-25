@@ -16,3 +16,5 @@ export const fixtureReviewer: RecommendationProvider = {
       limitations: ['AI未接続', '地理条件・活動の募集状況・同意は未確認'] };
   }
 };
+
+export * from './m3';
