@@ -10,6 +10,10 @@ export async function GET(request: Request) {
   const rawToken = extractSessionTokenFromCookieHeader(request.headers.get('cookie'));
   const resolved = await store.resolveSessionByToken(rawToken);
   const snapshot = await store.getFoundationSnapshot();
+  const notifications =
+    resolved.authenticated && resolved.account
+      ? await store.listNotificationsForActor(resolved.account.actorId)
+      : [];
 
   return NextResponse.json({
     authenticated: resolved.authenticated,
@@ -23,6 +27,8 @@ export async function GET(request: Request) {
           operatedActorIds: resolved.authContext.operatedActorIds
         }
       : null,
-    snapshot
+    notifications,
+    snapshot,
+    serverTimestamp: new Date().toISOString()
   });
 }

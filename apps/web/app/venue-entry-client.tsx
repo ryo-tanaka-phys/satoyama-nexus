@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useState, useTransition } from 'react';
+import { useCallback, useEffect, useState, useTransition } from 'react';
 import {
   VENUE_TAGS,
   type DemoAccountRecord,
@@ -9,8 +9,12 @@ import {
   type VenueRoleTrack,
   type VenueTag
 } from '@satoyama/domain';
-import type { VenueFoundationSnapshot } from '../../../db/venue-store';
+import type {
+  VenueFoundationSnapshot,
+  VenueNotificationRecord
+} from '../../../db/venue-store';
 import { KyushuGridPicker } from './components/kyushu-grid-picker';
+import { VenueSocialHub } from './components/venue-social-hub';
 
 export interface InitialVenuePageData {
   authenticated: boolean;
@@ -22,8 +26,12 @@ export interface InitialVenuePageData {
     roles: readonly string[];
     operatedActorIds: readonly string[];
   } | null;
+  notifications: readonly VenueNotificationRecord[];
   snapshot: VenueFoundationSnapshot;
+  serverTimestamp: string;
 }
+
+const POLL_INTERVAL_MS = 4000;
 
 const ROLE_OPTIONS: readonly {
   value: VenueRoleTrack;
@@ -64,6 +72,7 @@ function roleBadgeLabel(account: DemoAccountRecord, profile: PublicVenueProfileV
 export function VenueEntryClient({ initialData }: { initialData: InitialVenuePageData }) {
   const [data, setData] = useState<InitialVenuePageData>(initialData);
   const [busy, setBusy] = useState(false);
+  const [autoPoll, setAutoPoll] = useState(true);
   const [feedback, setFeedback] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
   const [, startTransition] = useTransition();
 
@@ -79,11 +88,27 @@ export function VenueEntryClient({ initialData }: { initialData: InitialVenuePag
   const [bio, setBio] = useState('');
   const [seekingMatch, setSeekingMatch] = useState(true);
 
-  async function refreshSession() {
-    const res = await fetch('/api/venue/session', { cache: 'no-store' });
-    const next = (await res.json()) as InitialVenuePageData;
-    startTransition(() => setData(next));
-  }
+  const refreshSession = useCallback(async () => {
+    try {
+      const res = await fetch('/api/venue/session', { cache: 'no-store' });
+      if (!res.ok) return;
+      const next = (await res.json()) as InitialVenuePageData;
+      startTransition(() => setData(next));
+    } catch {
+      // Ignore transient network errors during background polling
+    }
+  }, []);
+
+  // 4-second polling for live 5-device synchronization while logged in
+  useEffect(() => {
+    if (!data.authenticated || !autoPoll) return;
+    const id = setInterval(() => {
+      if (!busy) {
+        void refreshSession();
+      }
+    }, POLL_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [data.authenticated, autoPoll, busy, refreshSession]);
 
   function toggleTag(list: VenueTag[], setList: (next: VenueTag[]) => void, tag: VenueTag) {
     if (list.includes(tag)) {
@@ -167,7 +192,6 @@ export function VenueEntryClient({ initialData }: { initialData: InitialVenuePag
   }
 
   const demoAccounts5 = data.snapshot.demoAccounts.filter((a) => a.id.startsWith('demo-acct-'));
-  const actorMap = new Map(data.snapshot.actors.map((a) => [a.id, a]));
   const profileMap = new Map(data.snapshot.publicProfiles.map((p) => [p.actorId, p]));
 
   return (
@@ -210,7 +234,6 @@ export function VenueEntryClient({ initialData }: { initialData: InitialVenuePag
 
         {!data.authenticated || !data.account ? (
           <>
-            {/* Mode separation strip */}
             <section className="card mode-strip">
               <div>
                 <h2>デモ参加モード選択（本体と体験用を分離）</h2>
@@ -227,7 +250,6 @@ export function VenueEntryClient({ initialData }: { initialData: InitialVenuePag
             </section>
 
             <div className="venue-entry-layout">
-              {/* Left: Quick login for 5-person live demo */}
               <section className="card">
                 <h2>
                   第1部・5人実演用 クイックログイン <span className="badge badge-sim">5端末同時デモ対応</span>
@@ -262,7 +284,6 @@ export function VenueEntryClient({ initialData }: { initialData: InitialVenuePag
                 </div>
               </section>
 
-              {/* Right: New registration form */}
               <section className="card">
                 <h2>
                   新規アカウント作成 <span className="badge badge-sim">タグ＋固定グリッド登録</span>
@@ -400,7 +421,6 @@ export function VenueEntryClient({ initialData }: { initialData: InitialVenuePag
             </div>
           </>
         ) : (
-          /* Logged-in Role Dashboard Shell (P2 verified session view; P3-P6 interactive modules attach here) */
           <div className="dashboard-shell">
             <section className="card dashboard-hero">
               <div className="dashboard-hero-head">
@@ -408,128 +428,79 @@ export function VenueEntryClient({ initialData }: { initialData: InitialVenuePag
                   <span className="badge badge-ok">{roleBadgeLabel(data.account, data.publicProfile)}</span>{' '}
                   <span className="badge badge-sim">
                     サーバー認証済み ({data.authSummary?.userAccountId})
+                  </span>{' '}
+                  <span className="badge badge-public">
+                    {autoPoll ? '自動同期 ON (4秒)' : '自動同期 OFF'}
                   </span>
                   <h2 style={{ marginTop: 8 }}>{data.account.displayName} のダッシュボード</h2>
                 </div>
                 <div className="dashboard-hero-actions">
+                  <button
+                    type="button"
+                    className="btn-secondary btn-sm"
+                    onClick={() => setAutoPoll((v) => !v)}
+                  >
+                    {autoPoll ? '自動同期を停止' : '自動同期を再開'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-secondary btn-sm"
+                    onClick={() => void refreshSession()}
+                    disabled={busy}
+                  >
+                    今すぐ更新
+                  </button>
                   {data.account.roleTrack === 'operator' && (
                     <Link href="/workbench" className="btn-link">
-                      M1-M4 裏方厳格審査ワークベンチを開く →
+                      M1-M4 裏方厳格審査ワークベンチ →
                     </Link>
                   )}
-                  <button type="button" className="btn-secondary" onClick={handleLogout} disabled={busy}>
-                    ログアウトして別役へ
+                  <button type="button" className="btn-secondary btn-sm" onClick={handleLogout} disabled={busy}>
+                    ログアウト
                   </button>
                 </div>
               </div>
 
               {data.account.roleTrack === 'organization' &&
                 data.publicProfile?.orgCertificationStatus !== 'certified' && (
-                  <div className="feedback-box feedback-warn" style={{ marginTop: 12 }}>
+                  <div className="feedback-box feedback-warn" style={{ marginTop: 12, marginBottom: 0 }}>
                     <strong>団体専用機能ロック中（法人格モデル）：</strong>
                     運営による市民団体認証・責任者権限付与が完了するまで、カレンダー活動管理・メンバー管理・メンバーチャット・簡易レポート作成・公的申請はロックされます（P4/P5 で申請・解放フローを接続）。
                   </div>
                 )}
 
-              <div className="grid-2" style={{ marginTop: 14 }}>
-                <div className="card card-muted">
-                  <h3>自己紹介カード（能動マッチング専用・AI非入力）</h3>
-                  <p>{data.publicProfile?.bio || '（未入力）'}</p>
-                  <p className="muted-sm">
-                    本拠地：<strong>{data.publicProfile?.gridLabel ?? '未設定'}</strong>（
-                    <code>{data.publicProfile?.gridCellId ?? 'none'}</code>）
-                  </p>
-                  <p className="muted-sm">
-                    ※年齢・性別は内部データ扱いのため、他ユーザー向け画面には一切表示されません。
-                  </p>
-                </div>
-                <div className="card card-muted">
-                  <h3>マッチング用 構造化タグ</h3>
-                  <p>
-                    <strong>興味のある分野：</strong>
-                    {data.publicProfile?.interestTags.length
-                      ? data.publicProfile.interestTags.map((t) => (
-                          <span key={t} className="badge badge-sim" style={{ marginRight: 4 }}>
-                            {t}
-                          </span>
-                        ))
-                      : '未選択'}
-                  </p>
-                  <p>
-                    <strong>自信のある分野：</strong>
-                    {data.publicProfile?.strengthTags.length
-                      ? data.publicProfile.strengthTags.map((t) => (
-                          <span key={t} className="badge badge-public" style={{ marginRight: 4 }}>
-                            {t}
-                          </span>
-                        ))
-                      : '未選択'}
-                  </p>
-                  <p className="muted-sm">
-                    サーバー付与ロール：<code>{data.authSummary?.roles.join(', ')}</code>
-                  </p>
-                </div>
+              <div className="profile-summary-strip">
+                <span>
+                  本拠地：<strong>{data.publicProfile?.gridLabel ?? '未設定'}</strong>
+                </span>
+                <span>
+                  興味：
+                  {data.publicProfile?.interestTags.map((t) => (
+                    <span key={t} className="badge badge-sim" style={{ marginLeft: 4 }}>
+                      {t}
+                    </span>
+                  ))}
+                </span>
+                <span>
+                  自信：
+                  {data.publicProfile?.strengthTags.map((t) => (
+                    <span key={t} className="badge badge-public" style={{ marginLeft: 4 }}>
+                      ★{t}
+                    </span>
+                  ))}
+                </span>
               </div>
             </section>
 
-            {/* Preview of Kyushu community feed & separated corporate plans */}
-            <div className="grid-2">
-              <section className="card">
-                <h2>
-                  九州大学周辺 交流フィード（初期シード）{' '}
-                  <span className="badge badge-sim">縦横無尽タイムライン</span>
-                </h2>
-                <div className="feed-list">
-                  {data.snapshot.initialPosts.map((post) => {
-                    const author = actorMap.get(post.authorActorId);
-                    return (
-                      <article key={post.id} className="feed-item">
-                        <div className="feed-meta">
-                          <span className={`badge ${post.channel === 'public-offer' ? 'badge-public' : 'badge-sim'}`}>
-                            {post.channel === 'public-offer' ? '公的オファー・縦' : '横の交流'}
-                          </span>{' '}
-                          <strong>{author?.displayName ?? post.authorActorId}</strong>
-                        </div>
-                        <h3>{post.title}</h3>
-                        <p>{post.body}</p>
-                        <div className="feed-tags">
-                          {post.tags.map((t) => (
-                            <span key={t} className="badge badge-sim">
-                              #{t}
-                            </span>
-                          ))}
-                        </div>
-                      </article>
-                    );
-                  })}
-                </div>
-              </section>
-
-              <section className="card">
-                <h2>
-                  疑似企業 支援プラン（操作なし・分離テーブル）{' '}
-                  <span className="badge badge-warn">3プラン稼働準備</span>
-                </h2>
-                <p className="muted-sm">
-                  企業アカウントは <code>simulation.actor</code> から完全分離されており、条件を満たした団体・活動へ自動で支援申し出通知を送ります。
-                </p>
-                <div className="feed-list">
-                  {data.snapshot.corporatePlans.map((plan) => {
-                    const sponsor = data.snapshot.corporateSponsors.find((s) => s.id === plan.sponsorId);
-                    return (
-                      <article key={plan.id} className="feed-item">
-                        <div className="feed-meta">
-                          <span className="badge badge-warn">{plan.supportType}</span>{' '}
-                          <strong>{sponsor?.name}</strong>
-                        </div>
-                        <h3>{plan.title}</h3>
-                        <p className="muted-sm">{plan.summary}</p>
-                      </article>
-                    );
-                  })}
-                </div>
-              </section>
-            </div>
+            <VenueSocialHub
+              account={data.account}
+              publicProfile={data.publicProfile}
+              notifications={data.notifications}
+              snapshot={data.snapshot}
+              busy={busy}
+              onRefresh={refreshSession}
+              onFeedback={setFeedback}
+            />
           </div>
         )}
       </main>

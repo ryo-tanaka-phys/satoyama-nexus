@@ -13,6 +13,10 @@ export default async function Home() {
   const store = getActiveVenueFoundationStore();
   const resolved = await store.resolveSessionByToken(rawToken);
   const snapshot = await store.getFoundationSnapshot();
+  const notifications =
+    resolved.authenticated && resolved.account
+      ? await store.listNotificationsForActor(resolved.account.actorId)
+      : [];
 
   const initialData: InitialVenuePageData = {
     authenticated: resolved.authenticated,
@@ -26,7 +30,9 @@ export default async function Home() {
           operatedActorIds: resolved.authContext.operatedActorIds
         }
       : null,
-    snapshot
+    notifications,
+    snapshot,
+    serverTimestamp: new Date().toISOString()
   };
 
   return <VenueEntryClient initialData={initialData} />;

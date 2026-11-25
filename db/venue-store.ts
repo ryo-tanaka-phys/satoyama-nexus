@@ -53,6 +53,48 @@ export interface ResolvedVenueSession {
   authContext: ServerAuthContext;
 }
 
+export interface SocialCommentRecord {
+  id: string;
+  postId: string;
+  authorActorId: string;
+  body: string;
+  isExpertAdvice: boolean;
+  createdAt: string;
+}
+
+export type ActiveConnectionSupportStatus =
+  | 'unsupported-informal'
+  | 'activity-applied'
+  | 'officially-supported';
+
+export interface ActiveConnectionRecord {
+  id: string;
+  fromActorId: string;
+  toActorId: string;
+  postId: string | null;
+  supportStatus: ActiveConnectionSupportStatus;
+  note: string;
+  createdAt: string;
+}
+
+export type VenueNotificationCategory =
+  | 'matching'
+  | 'corporate-offer'
+  | 'government-action'
+  | 'certification'
+  | 'social';
+
+export interface VenueNotificationRecord {
+  id: string;
+  recipientActorId: string;
+  category: VenueNotificationCategory;
+  title: string;
+  body: string;
+  referenceId: string | null;
+  isRead: boolean;
+  createdAt: string;
+}
+
 export interface VenueFoundationSnapshot {
   actors: readonly Actor[];
   publicProfiles: readonly PublicVenueProfileView[];
@@ -61,6 +103,36 @@ export interface VenueFoundationSnapshot {
   corporatePlans: readonly CorporateSupportPlanRecord[];
   memberships: readonly SeedDummyMembership[];
   initialPosts: readonly SeedSocialPost[];
+  comments: readonly SocialCommentRecord[];
+  activeConnections: readonly ActiveConnectionRecord[];
+}
+
+export interface CreateSocialPostInput {
+  authorActorId: string;
+  channel: 'horizontal' | 'public-offer' | 'activity-log';
+  title: string;
+  body: string;
+  tags: readonly string[];
+  gridCellId?: string | null;
+}
+
+export interface AddSocialCommentInput {
+  postId: string;
+  authorActorId: string;
+  body: string;
+}
+
+export interface CreateActiveConnectionInput {
+  fromActorId: string;
+  toActorId: string;
+  postId?: string | null;
+  note?: string;
+}
+
+export interface UpdateOwnProfileInput {
+  actorId: string;
+  bio?: string;
+  seekingMatch?: boolean;
 }
 
 export interface VenueFoundationStorePort {
@@ -76,6 +148,13 @@ export interface VenueFoundationStorePort {
   ): Promise<{ rawToken: string; session: DemoSessionRecord; account: DemoAccountRecord }>;
   resolveSessionByToken(rawToken: string | null | undefined, nowIso?: string): Promise<ResolvedVenueSession>;
   revokeSessionByToken(rawToken: string | null | undefined, nowIso?: string): Promise<void>;
+  createSocialPost(input: CreateSocialPostInput, nowIso?: string): Promise<SeedSocialPost>;
+  addSocialComment(input: AddSocialCommentInput, nowIso?: string): Promise<SocialCommentRecord>;
+  endorseSocialPost(postId: string): Promise<SeedSocialPost>;
+  createActiveConnection(input: CreateActiveConnectionInput, nowIso?: string): Promise<ActiveConnectionRecord>;
+  updateOwnProfile(input: UpdateOwnProfileInput, nowIso?: string): Promise<VenueProfileRecord>;
+  listNotificationsForActor(actorId: string): Promise<readonly VenueNotificationRecord[]>;
+  markNotificationRead(notificationId: string, recipientActorId: string): Promise<boolean>;
 }
 
 function actorKindForRoleTrack(roleTrack: VenueRoleTrack): Actor['kind'] {
@@ -115,6 +194,9 @@ export class InMemoryVenueFoundationStore implements VenueFoundationStorePort {
   private corporateSponsors: CorporateSponsorRecord[] = [];
   private corporatePlans: CorporateSupportPlanRecord[] = [];
   private initialPosts: SeedSocialPost[] = [];
+  private comments: SocialCommentRecord[] = [];
+  private activeConnections: ActiveConnectionRecord[] = [];
+  private notifications: VenueNotificationRecord[] = [];
   private seq = 1;
 
   async ensureSeeded(): Promise<void> {
@@ -139,7 +221,9 @@ export class InMemoryVenueFoundationStore implements VenueFoundationStorePort {
       corporateSponsors: structuredClone(this.corporateSponsors),
       corporatePlans: structuredClone(this.corporatePlans),
       memberships: structuredClone(this.memberships),
-      initialPosts: structuredClone(this.initialPosts)
+      initialPosts: structuredClone(this.initialPosts),
+      comments: structuredClone(this.comments),
+      activeConnections: structuredClone(this.activeConnections)
     };
   }
 
@@ -276,6 +360,147 @@ export class InMemoryVenueFoundationStore implements VenueFoundationStorePort {
     if (existing) {
       existing.revokedAt = nowIso;
     }
+  }
+
+  async createSocialPost(input: CreateSocialPostInput, nowIso = new Date().toISOString()): Promise<SeedSocialPost> {
+    await this.ensureSeeded();
+    const title = input.title.trim();
+    const body = input.body.trim();
+    if (!title || !body) throw new Error('タイトルと本文を入力してください。');
+    const tags = validateVenueTags(input.tags);
+    const gridCellId = input.gridCellId?.trim() || this.profiles.get(input.authorActorId)?.gridCellId || 'grid-r1-c2';
+    resolveGridCellCoordinates(gridCellId);
+
+    const post: SeedSocialPost = {
+      id: `post-${Date.now().toString(36)}-${this.seq++}`,
+      authorActorId: input.authorActorId,
+      channel: input.channel,
+      title,
+      body,
+      tags,
+      gridCellId,
+      endorsementCount: 0,
+      createdAt: nowIso
+    };
+    this.initialPosts.unshift(post);
+    return structuredClone(post);
+  }
+
+  async addSocialComment(input: AddSocialCommentInput, nowIso = new Date().toISOString()): Promise<SocialCommentRecord> {
+    await this.ensureSeeded();
+    const body = input.body.trim();
+    if (!body) throw new Error('コメント本文を入力してください。');
+    const post = this.initialPosts.find((p) => p.id === input.postId);
+    if (!post) throw new Error('対象の投稿が見つかりません。');
+
+    const authorProfile = this.profiles.get(input.authorActorId);
+    const authorActor = this.actors.find((a) => a.id === input.authorActorId);
+    // Server strictly determines expert advice badge from verified certification status
+    const isExpertAdvice = Boolean(authorProfile?.expertCertified);
+
+    const comment: SocialCommentRecord = {
+      id: `cmt-${Date.now().toString(36)}-${this.seq++}`,
+      postId: post.id,
+      authorActorId: input.authorActorId,
+      body,
+      isExpertAdvice,
+      createdAt: nowIso
+    };
+    this.comments.push(comment);
+
+    if (post.authorActorId !== input.authorActorId) {
+      this.notifications.unshift({
+        id: `notif-${Date.now().toString(36)}-${this.seq++}`,
+        recipientActorId: post.authorActorId,
+        category: 'social',
+        title: isExpertAdvice
+          ? `【認証済み専門家の助言】「${post.title}」にコメントが届きました`
+          : `「${post.title}」にコメントが届きました`,
+        body: `${authorActor?.displayName ?? input.authorActorId}：${body.slice(0, 80)}`,
+        referenceId: post.id,
+        isRead: false,
+        createdAt: nowIso
+      });
+    }
+
+    return structuredClone(comment);
+  }
+
+  async endorseSocialPost(postId: string): Promise<SeedSocialPost> {
+    await this.ensureSeeded();
+    const post = this.initialPosts.find((p) => p.id === postId);
+    if (!post) throw new Error('対象の投稿が見つかりません。');
+    post.endorsementCount += 1;
+    return structuredClone(post);
+  }
+
+  async createActiveConnection(
+    input: CreateActiveConnectionInput,
+    nowIso = new Date().toISOString()
+  ): Promise<ActiveConnectionRecord> {
+    await this.ensureSeeded();
+    if (input.fromActorId === input.toActorId) {
+      throw new Error('自分自身には能動マッチング接続できません。');
+    }
+    const fromActor = this.actors.find((a) => a.id === input.fromActorId);
+    const toActor = this.actors.find((a) => a.id === input.toActorId);
+    if (!fromActor || !toActor) {
+      throw new Error('接続対象のアカウントが見つかりません。');
+    }
+    const note = input.note?.trim() || '自己紹介・投稿を見て能動マッチングでつながりを申請しました。';
+    const conn: ActiveConnectionRecord = {
+      id: `conn-${Date.now().toString(36)}-${this.seq++}`,
+      fromActorId: input.fromActorId,
+      toActorId: input.toActorId,
+      postId: input.postId?.trim() || null,
+      // Smooth active connection starts explicitly unsupported until formal certification/application
+      supportStatus: 'unsupported-informal',
+      note,
+      createdAt: nowIso
+    };
+    this.activeConnections.unshift(conn);
+
+    this.notifications.unshift({
+      id: `notif-${Date.now().toString(36)}-${this.seq++}`,
+      recipientActorId: input.toActorId,
+      category: 'matching',
+      title: `能動マッチング接続：${fromActor.displayName} さんからつながり通知`,
+      body: `${note}（※正式な団体認証・活動申請まではプラットフォームサポート対象外）`,
+      referenceId: conn.id,
+      isRead: false,
+      createdAt: nowIso
+    });
+
+    return structuredClone(conn);
+  }
+
+  async updateOwnProfile(input: UpdateOwnProfileInput, nowIso = new Date().toISOString()): Promise<VenueProfileRecord> {
+    await this.ensureSeeded();
+    const existing = this.profiles.get(input.actorId);
+    if (!existing) throw new Error('プロフィールが見つかりません。');
+    if (typeof input.bio === 'string') {
+      existing.bio = input.bio.trim();
+    }
+    if (typeof input.seekingMatch === 'boolean') {
+      existing.seekingMatch = input.seekingMatch;
+    }
+    existing.updatedAt = nowIso;
+    return structuredClone(existing);
+  }
+
+  async listNotificationsForActor(actorId: string): Promise<readonly VenueNotificationRecord[]> {
+    await this.ensureSeeded();
+    return structuredClone(this.notifications.filter((n) => n.recipientActorId === actorId));
+  }
+
+  async markNotificationRead(notificationId: string, recipientActorId: string): Promise<boolean> {
+    await this.ensureSeeded();
+    const target = this.notifications.find(
+      (n) => n.id === notificationId && n.recipientActorId === recipientActorId
+    );
+    if (!target) return false;
+    target.isRead = true;
+    return true;
   }
 }
 
@@ -461,69 +686,101 @@ export class PgVenueFoundationStore implements VenueFoundationStorePort {
 
   async getFoundationSnapshot(): Promise<VenueFoundationSnapshot> {
     await this.ensureSeeded();
-    const [actorRes, profileRes, accountRes, sponsorRes, planRes, memRes, postRes] = await Promise.all([
-      this.pool.query<{ id: string; kind: Actor['kind']; display_name: string; expertise: Actor['expertise'] }>(
-        'SELECT id, kind, display_name, expertise FROM simulation.actor ORDER BY id ASC'
-      ),
-      this.pool.query<{
-        actor_id: string;
-        grid_cell_id: string | null;
-        postal_code: string | null;
-        interest_tags: VenueTag[];
-        strength_tags: VenueTag[];
-        bio: string;
-        age_internal: number | null;
-        gender_internal: string | null;
-        seeking_match: boolean;
-        org_certification_status: VenueProfileRecord['orgCertificationStatus'];
-        expert_certified: boolean;
-        expert_certification_note: string | null;
-        updated_at: string;
-      }>('SELECT actor_id, grid_cell_id, postal_code, interest_tags, strength_tags, bio, age_internal, gender_internal, seeking_match, org_certification_status, expert_certified, expert_certification_note, updated_at::text FROM simulation.venue_profile ORDER BY actor_id ASC'),
-      this.pool.query<{
-        id: string;
-        display_name: string;
-        role_track: VenueRoleTrack;
-        actor_id: string;
-        operated_actor_ids: string[];
-        grants: DemoAccountRecord['grants'];
-        created_at: string;
-        revoked_at: string | null;
-      }>('SELECT id, display_name, role_track, actor_id, operated_actor_ids, grants, created_at::text, revoked_at::text FROM simulation.demo_account ORDER BY created_at ASC'),
-      this.pool.query<{ id: string; name: string; industry: string; summary: string }>(
-        'SELECT id, name, industry, summary FROM simulation.corporate_sponsor ORDER BY id ASC'
-      ),
-      this.pool.query<{
-        id: string;
-        sponsor_id: string;
-        title: string;
-        support_type: CorporateSupportPlanRecord['supportType'];
-        summary: string;
-        required_tags: VenueTag[];
-        requires_certified_org: boolean;
-        requires_activity_report: boolean;
-        requires_expert_advice: boolean;
-      }>('SELECT id, sponsor_id, title, support_type, summary, required_tags, requires_certified_org, requires_activity_report, requires_expert_advice FROM simulation.corporate_support_plan ORDER BY id ASC'),
-      this.pool.query<{
-        person_actor_id: string;
-        organization_actor_id: string;
-        role: 'leader' | 'member';
-        is_dummy: boolean;
-        certified_by_account_id: string | null;
-        certified_at: string | null;
-      }>('SELECT person_actor_id, organization_actor_id, role, is_dummy, certified_by_account_id, certified_at::text FROM simulation.actor_membership'),
-      this.pool.query<{
-        id: string;
-        author_actor_id: string;
-        channel: SeedSocialPost['channel'];
-        title: string;
-        body: string;
-        tags: VenueTag[];
-        grid_cell_id: string;
-        endorsement_count: number;
-        created_at: string;
-      }>('SELECT id, author_actor_id, channel, title, body, tags, grid_cell_id, endorsement_count, created_at::text FROM simulation.social_post ORDER BY created_at DESC')
-    ]);
+    const [actorRes, profileRes, accountRes, sponsorRes, planRes, memRes, postRes, commentRes, connRes] =
+      await Promise.all([
+        this.pool.query<{ id: string; kind: Actor['kind']; display_name: string; expertise: Actor['expertise'] }>(
+          'SELECT id, kind, display_name, expertise FROM simulation.actor ORDER BY id ASC'
+        ),
+        this.pool.query<{
+          actor_id: string;
+          grid_cell_id: string | null;
+          postal_code: string | null;
+          interest_tags: VenueTag[];
+          strength_tags: VenueTag[];
+          bio: string;
+          age_internal: number | null;
+          gender_internal: string | null;
+          seeking_match: boolean;
+          org_certification_status: VenueProfileRecord['orgCertificationStatus'];
+          expert_certified: boolean;
+          expert_certification_note: string | null;
+          updated_at: string;
+        }>(
+          'SELECT actor_id, grid_cell_id, postal_code, interest_tags, strength_tags, bio, age_internal, gender_internal, seeking_match, org_certification_status, expert_certified, expert_certification_note, updated_at::text FROM simulation.venue_profile ORDER BY actor_id ASC'
+        ),
+        this.pool.query<{
+          id: string;
+          display_name: string;
+          role_track: VenueRoleTrack;
+          actor_id: string;
+          operated_actor_ids: string[];
+          grants: DemoAccountRecord['grants'];
+          created_at: string;
+          revoked_at: string | null;
+        }>(
+          'SELECT id, display_name, role_track, actor_id, operated_actor_ids, grants, created_at::text, revoked_at::text FROM simulation.demo_account ORDER BY created_at ASC'
+        ),
+        this.pool.query<{ id: string; name: string; industry: string; summary: string }>(
+          'SELECT id, name, industry, summary FROM simulation.corporate_sponsor ORDER BY id ASC'
+        ),
+        this.pool.query<{
+          id: string;
+          sponsor_id: string;
+          title: string;
+          support_type: CorporateSupportPlanRecord['supportType'];
+          summary: string;
+          required_tags: VenueTag[];
+          requires_certified_org: boolean;
+          requires_activity_report: boolean;
+          requires_expert_advice: boolean;
+        }>(
+          'SELECT id, sponsor_id, title, support_type, summary, required_tags, requires_certified_org, requires_activity_report, requires_expert_advice FROM simulation.corporate_support_plan ORDER BY id ASC'
+        ),
+        this.pool.query<{
+          person_actor_id: string;
+          organization_actor_id: string;
+          role: 'leader' | 'member';
+          is_dummy: boolean;
+          certified_by_account_id: string | null;
+          certified_at: string | null;
+        }>(
+          'SELECT person_actor_id, organization_actor_id, role, is_dummy, certified_by_account_id, certified_at::text FROM simulation.actor_membership'
+        ),
+        this.pool.query<{
+          id: string;
+          author_actor_id: string;
+          channel: SeedSocialPost['channel'];
+          title: string;
+          body: string;
+          tags: VenueTag[];
+          grid_cell_id: string;
+          endorsement_count: number;
+          created_at: string;
+        }>(
+          'SELECT id, author_actor_id, channel, title, body, tags, grid_cell_id, endorsement_count, created_at::text FROM simulation.social_post ORDER BY created_at DESC'
+        ),
+        this.pool.query<{
+          id: string;
+          post_id: string;
+          author_actor_id: string;
+          body: string;
+          is_expert_advice: boolean;
+          created_at: string;
+        }>(
+          'SELECT id, post_id, author_actor_id, body, is_expert_advice, created_at::text FROM simulation.social_comment ORDER BY created_at ASC'
+        ),
+        this.pool.query<{
+          id: string;
+          from_actor_id: string;
+          to_actor_id: string;
+          post_id: string | null;
+          support_status: ActiveConnectionSupportStatus;
+          note: string;
+          created_at: string;
+        }>(
+          'SELECT id, from_actor_id, to_actor_id, post_id, support_status, note, created_at::text FROM simulation.active_connection ORDER BY created_at DESC'
+        )
+      ]);
 
     const fullProfiles: VenueProfileRecord[] = profileRes.rows.map((r) => ({
       actorId: r.actor_id,
@@ -589,6 +846,23 @@ export class PgVenueFoundationStore implements VenueFoundationStorePort {
         tags: r.tags,
         gridCellId: r.grid_cell_id,
         endorsementCount: r.endorsement_count,
+        createdAt: r.created_at
+      })),
+      comments: commentRes.rows.map((r) => ({
+        id: r.id,
+        postId: r.post_id,
+        authorActorId: r.author_actor_id,
+        body: r.body,
+        isExpertAdvice: r.is_expert_advice,
+        createdAt: r.created_at
+      })),
+      activeConnections: connRes.rows.map((r) => ({
+        id: r.id,
+        fromActorId: r.from_actor_id,
+        toActorId: r.to_actor_id,
+        postId: r.post_id,
+        supportStatus: r.support_status,
+        note: r.note,
         createdAt: r.created_at
       }))
     };
@@ -891,5 +1165,292 @@ export class PgVenueFoundationStore implements VenueFoundationStorePort {
       'UPDATE simulation.demo_session SET revoked_at = $2::timestamptz WHERE token_hash = $1',
       [tokenHash, nowIso]
     );
+  }
+
+  async createSocialPost(input: CreateSocialPostInput, nowIso = new Date().toISOString()): Promise<SeedSocialPost> {
+    await this.ensureSeeded();
+    const title = input.title.trim();
+    const body = input.body.trim();
+    if (!title || !body) throw new Error('タイトルと本文を入力してください。');
+    const tags = validateVenueTags(input.tags);
+
+    let gridCellId = input.gridCellId?.trim() ?? '';
+    if (!gridCellId) {
+      const profRes = await this.pool.query<{ grid_cell_id: string | null }>(
+        'SELECT grid_cell_id FROM simulation.venue_profile WHERE actor_id = $1',
+        [input.authorActorId]
+      );
+      gridCellId = profRes.rows[0]?.grid_cell_id || 'grid-r1-c2';
+    }
+    resolveGridCellCoordinates(gridCellId);
+
+    const id = `post-${Date.now().toString(36)}-${generateSessionToken().slice(0, 6)}`;
+    await this.pool.query(
+      `INSERT INTO simulation.social_post
+         (id, author_actor_id, channel, title, body, tags, grid_cell_id, endorsement_count, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,0,$8::timestamptz)`,
+      [id, input.authorActorId, input.channel, title, body, JSON.stringify(tags), gridCellId, nowIso]
+    );
+    return {
+      id,
+      authorActorId: input.authorActorId,
+      channel: input.channel,
+      title,
+      body,
+      tags,
+      gridCellId,
+      endorsementCount: 0,
+      createdAt: nowIso
+    };
+  }
+
+  async addSocialComment(input: AddSocialCommentInput, nowIso = new Date().toISOString()): Promise<SocialCommentRecord> {
+    await this.ensureSeeded();
+    const body = input.body.trim();
+    if (!body) throw new Error('コメント本文を入力してください。');
+
+    const postRes = await this.pool.query<{ id: string; author_actor_id: string; title: string }>(
+      'SELECT id, author_actor_id, title FROM simulation.social_post WHERE id = $1',
+      [input.postId]
+    );
+    const post = postRes.rows[0];
+    if (!post) throw new Error('対象の投稿が見つかりません。');
+
+    const authorRes = await this.pool.query<{ display_name: string; expert_certified: boolean | null }>(
+      `SELECT a.display_name, p.expert_certified
+       FROM simulation.actor a
+       LEFT JOIN simulation.venue_profile p ON p.actor_id = a.id
+       WHERE a.id = $1`,
+      [input.authorActorId]
+    );
+    const isExpertAdvice = Boolean(authorRes.rows[0]?.expert_certified);
+    const authorName = authorRes.rows[0]?.display_name ?? input.authorActorId;
+
+    const id = `cmt-${Date.now().toString(36)}-${generateSessionToken().slice(0, 6)}`;
+    await this.pool.query(
+      `INSERT INTO simulation.social_comment (id, post_id, author_actor_id, body, is_expert_advice, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6::timestamptz)`,
+      [id, post.id, input.authorActorId, body, isExpertAdvice, nowIso]
+    );
+
+    if (post.author_actor_id !== input.authorActorId) {
+      const notifId = `notif-${Date.now().toString(36)}-${generateSessionToken().slice(0, 6)}`;
+      await this.pool.query(
+        `INSERT INTO simulation.venue_notification
+           (id, recipient_actor_id, category, title, body, reference_id, is_read, created_at)
+         VALUES ($1,$2,'social',$3,$4,$5,false,$6::timestamptz)`,
+        [
+          notifId,
+          post.author_actor_id,
+          isExpertAdvice
+            ? `【認証済み専門家の助言】「${post.title}」にコメントが届きました`
+            : `「${post.title}」にコメントが届きました`,
+          `${authorName}：${body.slice(0, 80)}`,
+          post.id,
+          nowIso
+        ]
+      );
+    }
+
+    return {
+      id,
+      postId: post.id,
+      authorActorId: input.authorActorId,
+      body,
+      isExpertAdvice,
+      createdAt: nowIso
+    };
+  }
+
+  async endorseSocialPost(postId: string): Promise<SeedSocialPost> {
+    await this.ensureSeeded();
+    const res = await this.pool.query<{
+      id: string;
+      author_actor_id: string;
+      channel: SeedSocialPost['channel'];
+      title: string;
+      body: string;
+      tags: VenueTag[];
+      grid_cell_id: string;
+      endorsement_count: number;
+      created_at: string;
+    }>(
+      `UPDATE simulation.social_post
+       SET endorsement_count = endorsement_count + 1
+       WHERE id = $1
+       RETURNING id, author_actor_id, channel, title, body, tags, grid_cell_id, endorsement_count, created_at::text`,
+      [postId]
+    );
+    const r = res.rows[0];
+    if (!r) throw new Error('対象の投稿が見つかりません。');
+    return {
+      id: r.id,
+      authorActorId: r.author_actor_id,
+      channel: r.channel,
+      title: r.title,
+      body: r.body,
+      tags: r.tags,
+      gridCellId: r.grid_cell_id,
+      endorsementCount: r.endorsement_count,
+      createdAt: r.created_at
+    };
+  }
+
+  async createActiveConnection(
+    input: CreateActiveConnectionInput,
+    nowIso = new Date().toISOString()
+  ): Promise<ActiveConnectionRecord> {
+    await this.ensureSeeded();
+    if (input.fromActorId === input.toActorId) {
+      throw new Error('自分自身には能動マッチング接続できません。');
+    }
+    const actorsRes = await this.pool.query<{ id: string; display_name: string }>(
+      'SELECT id, display_name FROM simulation.actor WHERE id = ANY($1::text[])',
+      [[input.fromActorId, input.toActorId]]
+    );
+    const fromActor = actorsRes.rows.find((a) => a.id === input.fromActorId);
+    const toActor = actorsRes.rows.find((a) => a.id === input.toActorId);
+    if (!fromActor || !toActor) {
+      throw new Error('接続対象のアカウントが見つかりません。');
+    }
+
+    const note = input.note?.trim() || '自己紹介・投稿を見て能動マッチングでつながりを申請しました。';
+    const id = `conn-${Date.now().toString(36)}-${generateSessionToken().slice(0, 6)}`;
+    const notifId = `notif-${Date.now().toString(36)}-${generateSessionToken().slice(0, 6)}`;
+
+    const tx = await this.pool.connect();
+    try {
+      await tx.query('BEGIN');
+      await tx.query(
+        `INSERT INTO simulation.active_connection
+           (id, from_actor_id, to_actor_id, post_id, support_status, note, created_at)
+         VALUES ($1,$2,$3,$4,'unsupported-informal',$5,$6::timestamptz)`,
+        [id, input.fromActorId, input.toActorId, input.postId?.trim() || null, note, nowIso]
+      );
+      await tx.query(
+        `INSERT INTO simulation.venue_notification
+           (id, recipient_actor_id, category, title, body, reference_id, is_read, created_at)
+         VALUES ($1,$2,'matching',$3,$4,$5,false,$6::timestamptz)`,
+        [
+          notifId,
+          input.toActorId,
+          `能動マッチング接続：${fromActor.display_name} さんからつながり通知`,
+          `${note}（※正式な団体認証・活動申請まではプラットフォームサポート対象外）`,
+          id,
+          nowIso
+        ]
+      );
+      await tx.query('COMMIT');
+    } catch (err) {
+      await tx.query('ROLLBACK');
+      throw err;
+    } finally {
+      tx.release();
+    }
+
+    return {
+      id,
+      fromActorId: input.fromActorId,
+      toActorId: input.toActorId,
+      postId: input.postId?.trim() || null,
+      supportStatus: 'unsupported-informal',
+      note,
+      createdAt: nowIso
+    };
+  }
+
+  async updateOwnProfile(input: UpdateOwnProfileInput, nowIso = new Date().toISOString()): Promise<VenueProfileRecord> {
+    await this.ensureSeeded();
+    const res = await this.pool.query<{
+      actor_id: string;
+      grid_cell_id: string | null;
+      postal_code: string | null;
+      interest_tags: VenueTag[];
+      strength_tags: VenueTag[];
+      bio: string;
+      age_internal: number | null;
+      gender_internal: string | null;
+      seeking_match: boolean;
+      org_certification_status: VenueProfileRecord['orgCertificationStatus'];
+      expert_certified: boolean;
+      expert_certification_note: string | null;
+      updated_at: string;
+    }>(
+      `UPDATE simulation.venue_profile
+       SET bio = COALESCE($2, bio),
+           seeking_match = COALESCE($3, seeking_match),
+           updated_at = $4::timestamptz
+       WHERE actor_id = $1
+       RETURNING actor_id, grid_cell_id, postal_code, interest_tags, strength_tags, bio, age_internal, gender_internal,
+                 seeking_match, org_certification_status, expert_certified, expert_certification_note, updated_at::text`,
+      [
+        input.actorId,
+        typeof input.bio === 'string' ? input.bio.trim() : null,
+        typeof input.seekingMatch === 'boolean' ? input.seekingMatch : null,
+        nowIso
+      ]
+    );
+    const r = res.rows[0];
+    if (!r) throw new Error('プロフィールが見つかりません。');
+    if (typeof input.seekingMatch === 'boolean') {
+      await this.pool.query(
+        'UPDATE simulation.actor_profile SET willingness = $2 WHERE actor_id = $1',
+        [input.actorId, input.seekingMatch ? 'explicit-interest' : 'open']
+      );
+    }
+    return {
+      actorId: r.actor_id,
+      gridCellId: r.grid_cell_id,
+      postalCode: r.postal_code,
+      interestTags: r.interest_tags,
+      strengthTags: r.strength_tags,
+      bio: r.bio,
+      ageInternal: r.age_internal,
+      genderInternal: r.gender_internal,
+      seekingMatch: r.seeking_match,
+      orgCertificationStatus: r.org_certification_status,
+      expertCertified: r.expert_certified,
+      expertCertificationNote: r.expert_certification_note,
+      updatedAt: r.updated_at
+    };
+  }
+
+  async listNotificationsForActor(actorId: string): Promise<readonly VenueNotificationRecord[]> {
+    await this.ensureSeeded();
+    const res = await this.pool.query<{
+      id: string;
+      recipient_actor_id: string;
+      category: VenueNotificationCategory;
+      title: string;
+      body: string;
+      reference_id: string | null;
+      is_read: boolean;
+      created_at: string;
+    }>(
+      `SELECT id, recipient_actor_id, category, title, body, reference_id, is_read, created_at::text
+       FROM simulation.venue_notification
+       WHERE recipient_actor_id = $1
+       ORDER BY created_at DESC`,
+      [actorId]
+    );
+    return res.rows.map((r) => ({
+      id: r.id,
+      recipientActorId: r.recipient_actor_id,
+      category: r.category,
+      title: r.title,
+      body: r.body,
+      referenceId: r.reference_id,
+      isRead: r.is_read,
+      createdAt: r.created_at
+    }));
+  }
+
+  async markNotificationRead(notificationId: string, recipientActorId: string): Promise<boolean> {
+    await this.ensureSeeded();
+    const res = await this.pool.query(
+      'UPDATE simulation.venue_notification SET is_read = true WHERE id = $1 AND recipient_actor_id = $2',
+      [notificationId, recipientActorId]
+    );
+    return (res.rowCount ?? 0) > 0;
   }
 }
