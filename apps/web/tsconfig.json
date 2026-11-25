@@ -16,6 +16,7 @@
   },
   "include": [
     "next-env.d.ts",
+    "../../db/pg.d.ts",
     "**/*.ts",
     "**/*.tsx",
     ".next/types/**/*.ts",

@@ -375,5 +375,5 @@ describe.runIf(Boolean(DB_URL))('M3 AI Review + PostGIS persistence round-trip',
       await adminPool.query(`DROP DATABASE IF EXISTS "${tempDb}"`);
       await adminPool.end();
     }
-  });
+  }, 30_000);
 });

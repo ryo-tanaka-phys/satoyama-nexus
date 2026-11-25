@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
-import { getWorkbench } from '../../../../lib/simulation-store';
+import { getActiveWorkbench } from '../../../../lib/workbench-runtime';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST() {
-  return NextResponse.json({ ok: true, snapshot: getWorkbench().reset() });
+  const result = await getActiveWorkbench().reset();
+  return NextResponse.json(result, { status: result.ok ? 200 : 409 });
 }

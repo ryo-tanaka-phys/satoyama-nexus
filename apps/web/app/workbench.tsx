@@ -289,13 +289,31 @@ export function SimulationWorkbenchClient({ initialSnapshot }: { initialSnapshot
       <div className="persona-bar" aria-label="Phase 1 模擬セッション切替">
         <div className="row-between">
           <div>
-            <strong>Phase 1 操作ロール切替（サーバー側 <code>ServerAuthContext</code> 検証用）</strong>
+            <strong>
+              Phase 1 操作ロール切替（サーバー側 <code>ServerAuthContext</code> 検証用）
+            </strong>{' '}
+            <span
+              className={`badge ${snapshot.persistence.mode === 'postgis' ? 'badge-ok' : 'badge-warn'}`}
+              title={snapshot.persistence.label}
+            >
+              永続化: {snapshot.persistence.mode === 'postgis' ? 'PostgreSQL / PostGIS' : 'メモリ動作'} ({snapshot.persistence.spatialEngine})
+            </span>
             <p className="small-note" style={{ marginBottom: 0 }}>
-              クライアントから権限や reviewerId を自己申告せず、サーバー側の模擬セッションから認可・自己レビュー禁止を判定します。
+              クライアントから権限や reviewerId を自己申告せず、サーバー側の模擬セッションから認可・自己レビュー禁止を判定します。{snapshot.persistence.label}
             </p>
           </div>
-          <button type="button" className="btn-secondary" onClick={handleReset} disabled={busy}>
-            初期状態にリセット
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={handleReset}
+            disabled={busy || snapshot.persistence.mode === 'postgis'}
+            title={
+              snapshot.persistence.mode === 'postgis'
+                ? 'PostgreSQL/PostGIS 永続化モードでは履歴保護のためリセットできません'
+                : 'メモリ状態を初期化'
+            }
+          >
+            {snapshot.persistence.mode === 'postgis' ? '永続化中（履歴保護）' : '初期状態にリセット'}
           </button>
         </div>
 

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getWorkbench, type DemoPersonaId } from '../../../../lib/simulation-store';
+import type { DemoPersonaId } from '../../../../lib/simulation-store';
+import { getActiveWorkbench } from '../../../../lib/workbench-runtime';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,7 +15,7 @@ export async function POST(request: NextRequest) {
     policyVersion?: string;
   };
 
-  const result = await getWorkbench().submitHumanReview(body.personaId ?? 'anonymous', {
+  const result = await getActiveWorkbench().submitHumanReview(body.personaId ?? 'anonymous', {
     caseId: body.caseId ?? '',
     expectedVersion: Number(body.expectedVersion ?? 0),
     decision: body.decision === 'rejected' ? 'rejected' : 'approved',

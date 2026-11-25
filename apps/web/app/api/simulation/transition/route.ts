@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { CollaborationStage } from '@satoyama/domain';
-import { getWorkbench, type DemoPersonaId } from '../../../../lib/simulation-store';
+import type { DemoPersonaId } from '../../../../lib/simulation-store';
+import { getActiveWorkbench } from '../../../../lib/workbench-runtime';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,7 +14,7 @@ export async function POST(request: NextRequest) {
     simulationNote?: string;
   };
 
-  const result = await getWorkbench().advanceCaseStage(body.personaId ?? 'anonymous', {
+  const result = await getActiveWorkbench().advanceCaseStage(body.personaId ?? 'anonymous', {
     caseId: body.caseId ?? '',
     expectedVersion: Number(body.expectedVersion ?? 0),
     targetStage: body.targetStage ?? 'requested',
