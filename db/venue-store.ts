@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import type { Pool } from 'pg';
 import {
   defaultGrantsForRoleTrack,
+  evaluateCorporateSupportPlans,
   resolveGridCellCoordinates,
   resolveVenueServerAuthContext,
   toPublicVenueProfile,
@@ -205,12 +206,84 @@ export interface GenerateActivityReportInput {
   additionalNote?: string;
 }
 
+export type PublicInteractionDirection = 'to-government' | 'from-government';
+export type PublicInteractionKind =
+  | 'petition'
+  | 'support-request'
+  | 'government-offer'
+  | 'partnership-offer';
+export type PublicInteractionStatus =
+  | 'submitted'
+  | 'under-review'
+  | 'questioned'
+  | 'approved'
+  | 'supported'
+  | 'returned'
+  | 'accepted'
+  | 'declined';
+
+export interface PublicInteractionRecord {
+  id: string;
+  direction: PublicInteractionDirection;
+  kind: PublicInteractionKind;
+  fromActorId: string;
+  toActorId: string;
+  reportId: string | null;
+  title: string;
+  body: string;
+  status: PublicInteractionStatus;
+  latestDecisionReason: string | null;
+  decidedByAccountId: string | null;
+  decidedAt: string | null;
+  createdAt: string;
+}
+
+export interface PublicInteractionEventRecord {
+  id: string;
+  interactionId: string;
+  actorAccountId: string;
+  fromStatus: string | null;
+  toStatus: string;
+  reason: string;
+  recordedAt: string;
+}
+
+export interface CorporateSupportOfferRecord {
+  id: string;
+  planId: string;
+  targetActorId: string;
+  matchedReasons: readonly string[];
+  status: 'offered' | 'acknowledged';
+  createdAt: string;
+}
+
+export interface CreatePublicInteractionInput {
+  direction: PublicInteractionDirection;
+  kind: PublicInteractionKind;
+  fromActorId: string;
+  toActorId: string;
+  actorAccountId: string;
+  reportId?: string | null;
+  title: string;
+  body: string;
+}
+
+export interface RespondPublicInteractionInput {
+  interactionId: string;
+  actorAccountId: string;
+  actorId: string;
+  roleTrack: VenueRoleTrack;
+  nextStatus: Exclude<PublicInteractionStatus, 'submitted'>;
+  reason: string;
+}
+
 export interface VenueFoundationSnapshot {
   actors: readonly Actor[];
   publicProfiles: readonly PublicVenueProfileView[];
   demoAccounts: readonly DemoAccountRecord[];
   corporateSponsors: readonly CorporateSponsorRecord[];
   corporatePlans: readonly CorporateSupportPlanRecord[];
+  corporateOffers: readonly CorporateSupportOfferRecord[];
   memberships: readonly SeedDummyMembership[];
   initialPosts: readonly SeedSocialPost[];
   comments: readonly SocialCommentRecord[];
@@ -219,6 +292,8 @@ export interface VenueFoundationSnapshot {
   auditEvents: readonly VenueAuditEventRecord[];
   orgCalendarEvents: readonly OrgCalendarEventRecord[];
   activityReports: readonly ActivityReportRecord[];
+  publicInteractions: readonly PublicInteractionRecord[];
+  publicInteractionEvents: readonly PublicInteractionEventRecord[];
 }
 
 export interface SubmitCertificationRequestInput {
@@ -350,6 +425,22 @@ export interface VenueFoundationStorePort {
     input: GenerateActivityReportInput,
     nowIso?: string
   ): Promise<{ report: ActivityReportRecord; auditEvent: VenueAuditEventRecord }>;
+  createPublicInteraction(
+    input: CreatePublicInteractionInput,
+    nowIso?: string
+  ): Promise<{ interaction: PublicInteractionRecord; auditEvent: VenueAuditEventRecord }>;
+  respondPublicInteraction(
+    input: RespondPublicInteractionInput,
+    nowIso?: string
+  ): Promise<
+    | { ok: true; interaction: PublicInteractionRecord; auditEvent: VenueAuditEventRecord }
+    | { ok: false; reasonCode: string; message: string; auditEvent: VenueAuditEventRecord }
+  >;
+  evaluateAndDispatchCorporateOffers(
+    targetActorId: string,
+    nowIso?: string
+  ): Promise<readonly CorporateSupportOfferRecord[]>;
+  acknowledgeCorporateOffer(offerId: string, targetActorId: string): Promise<boolean>;
 }
 
 function haversineDistanceMeters(
@@ -462,6 +553,9 @@ export class InMemoryVenueFoundationStore implements VenueFoundationStorePort {
   private orgCalendarEvents: OrgCalendarEventRecord[] = [];
   private orgChatMessages: OrgChatMessageRecord[] = [];
   private activityReports: ActivityReportRecord[] = [];
+  private publicInteractions: PublicInteractionRecord[] = [];
+  private publicInteractionEvents: PublicInteractionEventRecord[] = [];
+  private corporateOffers: CorporateSupportOfferRecord[] = [];
   private seq = 1;
 
   async ensureSeeded(): Promise<void> {
@@ -485,6 +579,7 @@ export class InMemoryVenueFoundationStore implements VenueFoundationStorePort {
       demoAccounts: structuredClone([...this.accounts.values()]),
       corporateSponsors: structuredClone(this.corporateSponsors),
       corporatePlans: structuredClone(this.corporatePlans),
+      corporateOffers: structuredClone(this.corporateOffers),
       memberships: structuredClone(this.memberships),
       initialPosts: structuredClone(this.initialPosts),
       comments: structuredClone(this.comments),
@@ -492,7 +587,9 @@ export class InMemoryVenueFoundationStore implements VenueFoundationStorePort {
       certificationRequests: structuredClone(this.certificationRequests),
       auditEvents: structuredClone(this.auditEvents),
       orgCalendarEvents: structuredClone(this.orgCalendarEvents),
-      activityReports: structuredClone(this.activityReports)
+      activityReports: structuredClone(this.activityReports),
+      publicInteractions: structuredClone(this.publicInteractions),
+      publicInteractionEvents: structuredClone(this.publicInteractionEvents)
     };
   }
 
@@ -690,6 +787,10 @@ export class InMemoryVenueFoundationStore implements VenueFoundationStorePort {
         isRead: false,
         createdAt: nowIso
       });
+    }
+
+    if (isExpertAdvice) {
+      await this.evaluateAndDispatchCorporateOffers(post.authorActorId, nowIso);
     }
 
     return structuredClone(comment);
@@ -998,6 +1099,10 @@ export class InMemoryVenueFoundationStore implements VenueFoundationStorePort {
       },
       nowIso
     );
+
+    if (req.kind === 'organization' && input.decision === 'approved') {
+      await this.evaluateAndDispatchCorporateOffers(req.targetActorId, nowIso);
+    }
 
     return { ok: true, request: structuredClone(req), auditEvent };
   }
@@ -1342,7 +1447,326 @@ export class InMemoryVenueFoundationStore implements VenueFoundationStorePort {
       nowIso
     );
 
+    await this.evaluateAndDispatchCorporateOffers(input.organizationActorId, nowIso);
+
     return { report: structuredClone(report), auditEvent };
+  }
+
+  async evaluateAndDispatchCorporateOffers(
+    targetActorId: string,
+    nowIso = new Date().toISOString()
+  ): Promise<readonly CorporateSupportOfferRecord[]> {
+    await this.ensureSeeded();
+    const actor = this.actors.find((a) => a.id === targetActorId);
+    const profile = this.profiles.get(targetActorId);
+    if (!actor || actor.kind !== 'organization' || !profile) return [];
+
+    const orgPosts = this.initialPosts.filter((p) => p.authorActorId === targetActorId);
+    const orgPostIds = new Set(orgPosts.map((p) => p.id));
+    const expertAdviceCount = this.comments.filter((c) => orgPostIds.has(c.postId) && c.isExpertAdvice).length;
+    const submittedReportCount = this.activityReports.filter((r) => r.organizationActorId === targetActorId).length;
+    const tagSet = new Set<VenueTag>([...profile.interestTags, ...profile.strengthTags]);
+    for (const p of orgPosts) {
+      for (const t of p.tags) tagSet.add(t);
+    }
+
+    const candidates = evaluateCorporateSupportPlans(this.corporateSponsors, this.corporatePlans, {
+      targetActorId,
+      tags: [...tagSet],
+      isCertifiedOrganization: profile.orgCertificationStatus === 'certified',
+      submittedReportCount,
+      expertAdviceCount
+    });
+
+    const newlyCreated: CorporateSupportOfferRecord[] = [];
+    for (const cand of candidates) {
+      const exists = this.corporateOffers.some(
+        (o) => o.planId === cand.plan.id && o.targetActorId === targetActorId
+      );
+      if (exists) continue;
+      const offer: CorporateSupportOfferRecord = {
+        id: `corp-offer-${Date.now().toString(36)}-${this.seq++}`,
+        planId: cand.plan.id,
+        targetActorId,
+        matchedReasons: [...cand.matchedReasons],
+        status: 'offered',
+        createdAt: nowIso
+      };
+      this.corporateOffers.unshift(offer);
+      newlyCreated.push(offer);
+
+      this.notifications.unshift({
+        id: `notif-${Date.now().toString(36)}-${this.seq++}`,
+        recipientActorId: targetActorId,
+        category: 'corporate-offer',
+        title: `【企業支援申し出】${cand.sponsor.name}：${cand.plan.title}`,
+        body: `条件一致により自動案内：${cand.matchedReasons.join('／')}（${cand.plan.summary}）`,
+        referenceId: offer.id,
+        isRead: false,
+        createdAt: nowIso
+      });
+
+      await this.recordVenueAuditEvent(
+        {
+          actorAccountId: 'system-corporate-matcher',
+          action: 'corporate.offer.dispatched',
+          targetId: offer.id,
+          outcome: 'allowed',
+          reasonCode: 'CORPORATE_PLAN_MATCHED',
+          detailSummary: {
+            sponsorId: cand.sponsor.id,
+            planId: cand.plan.id,
+            targetActorId,
+            matchedReasons: cand.matchedReasons
+          }
+        },
+        nowIso
+      );
+    }
+
+    return structuredClone(newlyCreated);
+  }
+
+  async acknowledgeCorporateOffer(offerId: string, targetActorId: string): Promise<boolean> {
+    await this.ensureSeeded();
+    const offer = this.corporateOffers.find((o) => o.id === offerId && o.targetActorId === targetActorId);
+    if (!offer) return false;
+    offer.status = 'acknowledged';
+    return true;
+  }
+
+  async createPublicInteraction(
+    input: CreatePublicInteractionInput,
+    nowIso = new Date().toISOString()
+  ): Promise<{ interaction: PublicInteractionRecord; auditEvent: VenueAuditEventRecord }> {
+    await this.ensureSeeded();
+    const title = input.title.trim();
+    const body = input.body.trim();
+    if (!title || !body) throw new Error('件名と内容を入力してください。');
+    const fromActor = this.actors.find((a) => a.id === input.fromActorId);
+    const toActor = this.actors.find((a) => a.id === input.toActorId);
+    if (!fromActor || !toActor) throw new Error('送受信先のアカウントが見つかりません。');
+    if (input.reportId && !this.activityReports.some((r) => r.id === input.reportId)) {
+      throw new Error('添付された簡易レポートが見つかりません。');
+    }
+
+    const interaction: PublicInteractionRecord = {
+      id: `pub-${Date.now().toString(36)}-${this.seq++}`,
+      direction: input.direction,
+      kind: input.kind,
+      fromActorId: input.fromActorId,
+      toActorId: input.toActorId,
+      reportId: input.reportId?.trim() || null,
+      title,
+      body,
+      status: 'submitted',
+      latestDecisionReason: null,
+      decidedByAccountId: null,
+      decidedAt: null,
+      createdAt: nowIso
+    };
+    this.publicInteractions.unshift(interaction);
+
+    this.publicInteractionEvents.push({
+      id: `pubev-${Date.now().toString(36)}-${this.seq++}`,
+      interactionId: interaction.id,
+      actorAccountId: input.actorAccountId,
+      fromStatus: null,
+      toStatus: 'submitted',
+      reason: input.direction === 'to-government' ? '自治体窓口へ要望・公的申請を提出' : '自治体窓口からアカウントへオファーを発信',
+      recordedAt: nowIso
+    });
+
+    this.notifications.unshift({
+      id: `notif-${Date.now().toString(36)}-${this.seq++}`,
+      recipientActorId: input.toActorId,
+      category: 'government-action',
+      title:
+        input.direction === 'to-government'
+          ? `【要望・申請受信】${fromActor.displayName}：${title}`
+          : `【自治体からのオファー】${fromActor.displayName}：${title}`,
+      body: body.slice(0, 100),
+      referenceId: interaction.id,
+      isRead: false,
+      createdAt: nowIso
+    });
+
+    const auditEvent = await this.recordVenueAuditEvent(
+      {
+        actorAccountId: input.actorAccountId,
+        action: input.direction === 'to-government' ? 'public.petition.submit' : 'government.offer.send',
+        targetId: interaction.id,
+        outcome: 'allowed',
+        reasonCode: 'PUBLIC_INTERACTION_CREATED',
+        detailSummary: {
+          direction: input.direction,
+          kind: input.kind,
+          fromActorId: input.fromActorId,
+          toActorId: input.toActorId,
+          reportId: interaction.reportId
+        }
+      },
+      nowIso
+    );
+
+    if (input.direction === 'to-government') {
+      await this.evaluateAndDispatchCorporateOffers(input.fromActorId, nowIso);
+    }
+
+    return { interaction: structuredClone(interaction), auditEvent };
+  }
+
+  async respondPublicInteraction(
+    input: RespondPublicInteractionInput,
+    nowIso = new Date().toISOString()
+  ): Promise<
+    | { ok: true; interaction: PublicInteractionRecord; auditEvent: VenueAuditEventRecord }
+    | { ok: false; reasonCode: string; message: string; auditEvent: VenueAuditEventRecord }
+  > {
+    await this.ensureSeeded();
+    const reason = input.reason.trim();
+    if (!reason) {
+      const auditEvent = await this.recordVenueAuditEvent(
+        {
+          actorAccountId: input.actorAccountId,
+          action: 'public.interaction.respond',
+          targetId: input.interactionId,
+          outcome: 'denied',
+          reasonCode: 'DECISION_REASON_REQUIRED',
+          detailSummary: {}
+        },
+        nowIso
+      );
+      return { ok: false, reasonCode: 'DECISION_REASON_REQUIRED', message: '判断・応答の理由を入力してください。', auditEvent };
+    }
+
+    const item = this.publicInteractions.find((p) => p.id === input.interactionId);
+    if (!item) {
+      const auditEvent = await this.recordVenueAuditEvent(
+        {
+          actorAccountId: input.actorAccountId,
+          action: 'public.interaction.respond',
+          targetId: input.interactionId,
+          outcome: 'denied',
+          reasonCode: 'INTERACTION_NOT_FOUND',
+          detailSummary: {}
+        },
+        nowIso
+      );
+      return { ok: false, reasonCode: 'INTERACTION_NOT_FOUND', message: '対象の公的やり取りが見つかりません。', auditEvent };
+    }
+
+    if (item.direction === 'to-government') {
+      if (input.roleTrack !== 'government') {
+        const auditEvent = await this.recordVenueAuditEvent(
+          {
+            actorAccountId: input.actorAccountId,
+            action: 'public.petition.decide',
+            targetId: item.id,
+            outcome: 'denied',
+            reasonCode: 'FORBIDDEN_GOVERNMENT_ONLY',
+            detailSummary: { roleTrack: input.roleTrack }
+          },
+          nowIso
+        );
+        return { ok: false, reasonCode: 'FORBIDDEN_GOVERNMENT_ONLY', message: '要望・申請の審査・回答は自治体アカウントのみ実行できます。', auditEvent };
+      }
+      const allowedGovStatuses: readonly PublicInteractionStatus[] = [
+        'under-review',
+        'questioned',
+        'approved',
+        'supported',
+        'returned'
+      ];
+      if (!allowedGovStatuses.includes(input.nextStatus)) {
+        const auditEvent = await this.recordVenueAuditEvent(
+          {
+            actorAccountId: input.actorAccountId,
+            action: 'public.petition.decide',
+            targetId: item.id,
+            outcome: 'denied',
+            reasonCode: 'INVALID_STATUS_TRANSITION',
+            detailSummary: { nextStatus: input.nextStatus }
+          },
+          nowIso
+        );
+        return { ok: false, reasonCode: 'INVALID_STATUS_TRANSITION', message: '自治体回答として不正なステータスです。', auditEvent };
+      }
+    } else {
+      if (item.toActorId !== input.actorId) {
+        const auditEvent = await this.recordVenueAuditEvent(
+          {
+            actorAccountId: input.actorAccountId,
+            action: 'government.offer.respond',
+            targetId: item.id,
+            outcome: 'denied',
+            reasonCode: 'FORBIDDEN_RECIPIENT_ONLY',
+            detailSummary: { actorId: input.actorId, expectedToActorId: item.toActorId }
+          },
+          nowIso
+        );
+        return { ok: false, reasonCode: 'FORBIDDEN_RECIPIENT_ONLY', message: 'オファーへの応答は受信先アカウントのみ可能です。', auditEvent };
+      }
+      if (input.nextStatus !== 'accepted' && input.nextStatus !== 'declined') {
+        const auditEvent = await this.recordVenueAuditEvent(
+          {
+            actorAccountId: input.actorAccountId,
+            action: 'government.offer.respond',
+            targetId: item.id,
+            outcome: 'denied',
+            reasonCode: 'INVALID_STATUS_TRANSITION',
+            detailSummary: { nextStatus: input.nextStatus }
+          },
+          nowIso
+        );
+        return { ok: false, reasonCode: 'INVALID_STATUS_TRANSITION', message: 'オファー応答は accepted / declined のみ指定できます。', auditEvent };
+      }
+    }
+
+    const prevStatus = item.status;
+    item.status = input.nextStatus;
+    item.latestDecisionReason = reason;
+    item.decidedByAccountId = input.actorAccountId;
+    item.decidedAt = nowIso;
+
+    this.publicInteractionEvents.push({
+      id: `pubev-${Date.now().toString(36)}-${this.seq++}`,
+      interactionId: item.id,
+      actorAccountId: input.actorAccountId,
+      fromStatus: prevStatus,
+      toStatus: input.nextStatus,
+      reason,
+      recordedAt: nowIso
+    });
+
+    const notifyTargetId = item.direction === 'to-government' ? item.fromActorId : item.fromActorId;
+    this.notifications.unshift({
+      id: `notif-${Date.now().toString(36)}-${this.seq++}`,
+      recipientActorId: notifyTargetId,
+      category: 'government-action',
+      title:
+        item.direction === 'to-government'
+          ? `【自治体回答 (${input.nextStatus})】${item.title}`
+          : `【オファー応答 (${input.nextStatus})】${item.title}`,
+      body: `理由：${reason}`,
+      referenceId: item.id,
+      isRead: false,
+      createdAt: nowIso
+    });
+
+    const auditEvent = await this.recordVenueAuditEvent(
+      {
+        actorAccountId: input.actorAccountId,
+        action: item.direction === 'to-government' ? 'public.petition.decide' : 'government.offer.respond',
+        targetId: item.id,
+        outcome: 'allowed',
+        reasonCode: `STATUS_${input.nextStatus.toUpperCase()}`,
+        detailSummary: { fromStatus: prevStatus, toStatus: input.nextStatus, reason }
+      },
+      nowIso
+    );
+
+    return { ok: true, interaction: structuredClone(item), auditEvent };
   }
 }
 
@@ -1541,7 +1965,10 @@ export class PgVenueFoundationStore implements VenueFoundationStorePort {
       certRes,
       auditRes,
       calRes,
-      reportRes
+      reportRes,
+      pubIntRes,
+      pubEvRes,
+      corpOfferRes
     ] = await Promise.all([
         this.pool.query<{ id: string; kind: Actor['kind']; display_name: string; expertise: Actor['expertise'] }>(
           'SELECT id, kind, display_name, expertise FROM simulation.actor ORDER BY id ASC'
@@ -1690,6 +2117,44 @@ export class PgVenueFoundationStore implements VenueFoundationStorePort {
           created_at: string;
         }>(
           'SELECT id, organization_actor_id, title, period_label, calendar_event_count, social_log_count, expert_advice_count, summary_text, evidence_snapshot, created_by_account_id, created_at::text FROM simulation.activity_report ORDER BY created_at DESC'
+        ),
+        this.pool.query<{
+          id: string;
+          direction: PublicInteractionDirection;
+          kind: PublicInteractionKind;
+          from_actor_id: string;
+          to_actor_id: string;
+          report_id: string | null;
+          title: string;
+          body: string;
+          status: PublicInteractionStatus;
+          latest_decision_reason: string | null;
+          decided_by_account_id: string | null;
+          decided_at: string | null;
+          created_at: string;
+        }>(
+          'SELECT id, direction, kind, from_actor_id, to_actor_id, report_id, title, body, status, latest_decision_reason, decided_by_account_id, decided_at::text, created_at::text FROM simulation.public_interaction ORDER BY created_at DESC'
+        ),
+        this.pool.query<{
+          id: string;
+          interaction_id: string;
+          actor_account_id: string;
+          from_status: string | null;
+          to_status: string;
+          reason: string;
+          recorded_at: string;
+        }>(
+          'SELECT id, interaction_id, actor_account_id, from_status, to_status, reason, recorded_at::text FROM simulation.public_interaction_event ORDER BY recorded_at ASC'
+        ),
+        this.pool.query<{
+          id: string;
+          plan_id: string;
+          target_actor_id: string;
+          matched_reasons: string[];
+          status: 'offered' | 'acknowledged';
+          created_at: string;
+        }>(
+          'SELECT id, plan_id, target_actor_id, matched_reasons, status, created_at::text FROM simulation.corporate_support_offer ORDER BY created_at DESC'
         )
       ]);
 
@@ -1739,6 +2204,14 @@ export class PgVenueFoundationStore implements VenueFoundationStorePort {
         requiresCertifiedOrg: r.requires_certified_org,
         requiresActivityReport: r.requires_activity_report,
         requiresExpertAdvice: r.requires_expert_advice
+      })),
+      corporateOffers: corpOfferRes.rows.map((r) => ({
+        id: r.id,
+        planId: r.plan_id,
+        targetActorId: r.target_actor_id,
+        matchedReasons: r.matched_reasons,
+        status: r.status,
+        createdAt: r.created_at
       })),
       memberships: memRes.rows.map((r) => ({
         personActorId: r.person_actor_id,
@@ -1823,6 +2296,30 @@ export class PgVenueFoundationStore implements VenueFoundationStorePort {
         evidenceSnapshot: r.evidence_snapshot,
         createdByAccountId: r.created_by_account_id,
         createdAt: r.created_at
+      })),
+      publicInteractions: pubIntRes.rows.map((r) => ({
+        id: r.id,
+        direction: r.direction,
+        kind: r.kind,
+        fromActorId: r.from_actor_id,
+        toActorId: r.to_actor_id,
+        reportId: r.report_id,
+        title: r.title,
+        body: r.body,
+        status: r.status,
+        latestDecisionReason: r.latest_decision_reason,
+        decidedByAccountId: r.decided_by_account_id,
+        decidedAt: r.decided_at,
+        createdAt: r.created_at
+      })),
+      publicInteractionEvents: pubEvRes.rows.map((r) => ({
+        id: r.id,
+        interactionId: r.interaction_id,
+        actorAccountId: r.actor_account_id,
+        fromStatus: r.from_status,
+        toStatus: r.to_status,
+        reason: r.reason,
+        recordedAt: r.recorded_at
       }))
     };
   }
@@ -2209,6 +2706,10 @@ export class PgVenueFoundationStore implements VenueFoundationStorePort {
           nowIso
         ]
       );
+    }
+
+    if (isExpertAdvice) {
+      await this.evaluateAndDispatchCorporateOffers(post.author_actor_id, nowIso);
     }
 
     return {
@@ -2702,6 +3203,10 @@ export class PgVenueFoundationStore implements VenueFoundationStorePort {
       throw err;
     } finally {
       tx.release();
+    }
+
+    if (r.kind === 'organization' && input.decision === 'approved') {
+      await this.evaluateAndDispatchCorporateOffers(r.target_actor_id, nowIso);
     }
 
     return {
@@ -3214,6 +3719,460 @@ export class PgVenueFoundationStore implements VenueFoundationStorePort {
       nowIso
     );
 
+    await this.evaluateAndDispatchCorporateOffers(input.organizationActorId, nowIso);
+
     return { report, auditEvent };
+  }
+
+  async evaluateAndDispatchCorporateOffers(
+    targetActorId: string,
+    nowIso = new Date().toISOString()
+  ): Promise<readonly CorporateSupportOfferRecord[]> {
+    await this.ensureSeeded();
+    const actorRes = await this.pool.query<{ id: string; kind: Actor['kind'] }>(
+      'SELECT id, kind FROM simulation.actor WHERE id = $1',
+      [targetActorId]
+    );
+    if (actorRes.rows[0]?.kind !== 'organization') return [];
+
+    const [profRes, postRes, advRes, repRes, sponsorRes, planRes] = await Promise.all([
+      this.pool.query<{
+        interest_tags: VenueTag[];
+        strength_tags: VenueTag[];
+        org_certification_status: VenueProfileRecord['orgCertificationStatus'];
+      }>(
+        'SELECT interest_tags, strength_tags, org_certification_status FROM simulation.venue_profile WHERE actor_id = $1',
+        [targetActorId]
+      ),
+      this.pool.query<{ tags: VenueTag[] }>(
+        'SELECT tags FROM simulation.social_post WHERE author_actor_id = $1',
+        [targetActorId]
+      ),
+      this.pool.query<{ cnt: string }>(
+        `SELECT COUNT(*)::text AS cnt FROM simulation.social_comment c
+         JOIN simulation.social_post p ON p.id = c.post_id
+         WHERE p.author_actor_id = $1 AND c.is_expert_advice = true`,
+        [targetActorId]
+      ),
+      this.pool.query<{ cnt: string }>(
+        'SELECT COUNT(*)::text AS cnt FROM simulation.activity_report WHERE organization_actor_id = $1',
+        [targetActorId]
+      ),
+      this.pool.query<{ id: string; name: string; industry: string; summary: string }>(
+        'SELECT id, name, industry, summary FROM simulation.corporate_sponsor ORDER BY id ASC'
+      ),
+      this.pool.query<{
+        id: string;
+        sponsor_id: string;
+        title: string;
+        support_type: CorporateSupportPlanRecord['supportType'];
+        summary: string;
+        required_tags: VenueTag[];
+        requires_certified_org: boolean;
+        requires_activity_report: boolean;
+        requires_expert_advice: boolean;
+      }>(
+        'SELECT id, sponsor_id, title, support_type, summary, required_tags, requires_certified_org, requires_activity_report, requires_expert_advice FROM simulation.corporate_support_plan ORDER BY id ASC'
+      )
+    ]);
+
+    const prof = profRes.rows[0];
+    if (!prof) return [];
+
+    const tagSet = new Set<VenueTag>([...prof.interest_tags, ...prof.strength_tags]);
+    for (const p of postRes.rows) {
+      for (const t of p.tags) tagSet.add(t);
+    }
+
+    const plans: CorporateSupportPlanRecord[] = planRes.rows.map((r) => ({
+      id: r.id,
+      sponsorId: r.sponsor_id,
+      title: r.title,
+      supportType: r.support_type,
+      summary: r.summary,
+      requiredTags: r.required_tags,
+      requiresCertifiedOrg: r.requires_certified_org,
+      requiresActivityReport: r.requires_activity_report,
+      requiresExpertAdvice: r.requires_expert_advice
+    }));
+
+    const candidates = evaluateCorporateSupportPlans(sponsorRes.rows, plans, {
+      targetActorId,
+      tags: [...tagSet],
+      isCertifiedOrganization: prof.org_certification_status === 'certified',
+      submittedReportCount: Number(repRes.rows[0]?.cnt ?? '0'),
+      expertAdviceCount: Number(advRes.rows[0]?.cnt ?? '0')
+    });
+
+    const newlyCreated: CorporateSupportOfferRecord[] = [];
+    for (const cand of candidates) {
+      const offerId = `corp-offer-${Date.now().toString(36)}-${generateSessionToken().slice(0, 6)}`;
+      const ins = await this.pool.query(
+        `INSERT INTO simulation.corporate_support_offer
+           (id, plan_id, target_actor_id, matched_reasons, status, created_at)
+         VALUES ($1,$2,$3,$4::jsonb,'offered',$5::timestamptz)
+         ON CONFLICT (plan_id, target_actor_id) DO NOTHING`,
+        [offerId, cand.plan.id, targetActorId, JSON.stringify(cand.matchedReasons), nowIso]
+      );
+      if ((ins.rowCount ?? 0) === 0) continue;
+
+      const offer: CorporateSupportOfferRecord = {
+        id: offerId,
+        planId: cand.plan.id,
+        targetActorId,
+        matchedReasons: [...cand.matchedReasons],
+        status: 'offered',
+        createdAt: nowIso
+      };
+      newlyCreated.push(offer);
+
+      const notifId = `notif-${Date.now().toString(36)}-${generateSessionToken().slice(0, 6)}`;
+      await this.pool.query(
+        `INSERT INTO simulation.venue_notification
+           (id, recipient_actor_id, category, title, body, reference_id, is_read, created_at)
+         VALUES ($1,$2,'corporate-offer',$3,$4,$5,false,$6::timestamptz)`,
+        [
+          notifId,
+          targetActorId,
+          `【企業支援申し出】${cand.sponsor.name}：${cand.plan.title}`,
+          `条件一致により自動案内：${cand.matchedReasons.join('／')}（${cand.plan.summary}）`,
+          offerId,
+          nowIso
+        ]
+      );
+
+      await this.recordVenueAuditEvent(
+        {
+          actorAccountId: 'system-corporate-matcher',
+          action: 'corporate.offer.dispatched',
+          targetId: offerId,
+          outcome: 'allowed',
+          reasonCode: 'CORPORATE_PLAN_MATCHED',
+          detailSummary: {
+            sponsorId: cand.sponsor.id,
+            planId: cand.plan.id,
+            targetActorId,
+            matchedReasons: cand.matchedReasons
+          }
+        },
+        nowIso
+      );
+    }
+
+    return newlyCreated;
+  }
+
+  async acknowledgeCorporateOffer(offerId: string, targetActorId: string): Promise<boolean> {
+    await this.ensureSeeded();
+    const res = await this.pool.query(
+      `UPDATE simulation.corporate_support_offer SET status = 'acknowledged' WHERE id = $1 AND target_actor_id = $2`,
+      [offerId, targetActorId]
+    );
+    return (res.rowCount ?? 0) > 0;
+  }
+
+  async createPublicInteraction(
+    input: CreatePublicInteractionInput,
+    nowIso = new Date().toISOString()
+  ): Promise<{ interaction: PublicInteractionRecord; auditEvent: VenueAuditEventRecord }> {
+    await this.ensureSeeded();
+    const title = input.title.trim();
+    const body = input.body.trim();
+    if (!title || !body) throw new Error('件名と内容を入力してください。');
+
+    const actorsRes = await this.pool.query<{ id: string; display_name: string }>(
+      'SELECT id, display_name FROM simulation.actor WHERE id = ANY($1::text[])',
+      [[input.fromActorId, input.toActorId]]
+    );
+    const fromActor = actorsRes.rows.find((a) => a.id === input.fromActorId);
+    const toActor = actorsRes.rows.find((a) => a.id === input.toActorId);
+    if (!fromActor || !toActor) throw new Error('送受信先のアカウントが見つかりません。');
+
+    const id = `pub-${Date.now().toString(36)}-${generateSessionToken().slice(0, 6)}`;
+    const evId = `pubev-${Date.now().toString(36)}-${generateSessionToken().slice(0, 6)}`;
+    const notifId = `notif-${Date.now().toString(36)}-${generateSessionToken().slice(0, 6)}`;
+    const reportId = input.reportId?.trim() || null;
+
+    const tx = await this.pool.connect();
+    try {
+      await tx.query('BEGIN');
+      await tx.query(
+        `INSERT INTO simulation.public_interaction
+           (id, direction, kind, from_actor_id, to_actor_id, report_id, title, body, status, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'submitted',$9::timestamptz)`,
+        [id, input.direction, input.kind, input.fromActorId, input.toActorId, reportId, title, body, nowIso]
+      );
+      await tx.query(
+        `INSERT INTO simulation.public_interaction_event
+           (id, interaction_id, actor_account_id, from_status, to_status, reason, recorded_at)
+         VALUES ($1,$2,$3,NULL,'submitted',$4,$5::timestamptz)`,
+        [
+          evId,
+          id,
+          input.actorAccountId,
+          input.direction === 'to-government' ? '自治体窓口へ要望・公的申請を提出' : '自治体窓口からアカウントへオファーを発信',
+          nowIso
+        ]
+      );
+      await tx.query(
+        `INSERT INTO simulation.venue_notification
+           (id, recipient_actor_id, category, title, body, reference_id, is_read, created_at)
+         VALUES ($1,$2,'government-action',$3,$4,$5,false,$6::timestamptz)`,
+        [
+          notifId,
+          input.toActorId,
+          input.direction === 'to-government'
+            ? `【要望・申請受信】${fromActor.display_name}：${title}`
+            : `【自治体からのオファー】${fromActor.display_name}：${title}`,
+          body.slice(0, 100),
+          id,
+          nowIso
+        ]
+      );
+      await tx.query('COMMIT');
+    } catch (err) {
+      await tx.query('ROLLBACK');
+      throw err;
+    } finally {
+      tx.release();
+    }
+
+    const auditEvent = await this.recordVenueAuditEvent(
+      {
+        actorAccountId: input.actorAccountId,
+        action: input.direction === 'to-government' ? 'public.petition.submit' : 'government.offer.send',
+        targetId: id,
+        outcome: 'allowed',
+        reasonCode: 'PUBLIC_INTERACTION_CREATED',
+        detailSummary: {
+          direction: input.direction,
+          kind: input.kind,
+          fromActorId: input.fromActorId,
+          toActorId: input.toActorId,
+          reportId
+        }
+      },
+      nowIso
+    );
+
+    if (input.direction === 'to-government') {
+      await this.evaluateAndDispatchCorporateOffers(input.fromActorId, nowIso);
+    }
+
+    return {
+      interaction: {
+        id,
+        direction: input.direction,
+        kind: input.kind,
+        fromActorId: input.fromActorId,
+        toActorId: input.toActorId,
+        reportId,
+        title,
+        body,
+        status: 'submitted',
+        latestDecisionReason: null,
+        decidedByAccountId: null,
+        decidedAt: null,
+        createdAt: nowIso
+      },
+      auditEvent
+    };
+  }
+
+  async respondPublicInteraction(
+    input: RespondPublicInteractionInput,
+    nowIso = new Date().toISOString()
+  ): Promise<
+    | { ok: true; interaction: PublicInteractionRecord; auditEvent: VenueAuditEventRecord }
+    | { ok: false; reasonCode: string; message: string; auditEvent: VenueAuditEventRecord }
+  > {
+    await this.ensureSeeded();
+    const reason = input.reason.trim();
+    if (!reason) {
+      const auditEvent = await this.recordVenueAuditEvent(
+        {
+          actorAccountId: input.actorAccountId,
+          action: 'public.interaction.respond',
+          targetId: input.interactionId,
+          outcome: 'denied',
+          reasonCode: 'DECISION_REASON_REQUIRED',
+          detailSummary: {}
+        },
+        nowIso
+      );
+      return { ok: false, reasonCode: 'DECISION_REASON_REQUIRED', message: '判断・応答の理由を入力してください。', auditEvent };
+    }
+
+    const res = await this.pool.query<{
+      id: string;
+      direction: PublicInteractionDirection;
+      kind: PublicInteractionKind;
+      from_actor_id: string;
+      to_actor_id: string;
+      report_id: string | null;
+      title: string;
+      body: string;
+      status: PublicInteractionStatus;
+      created_at: string;
+    }>(
+      `SELECT id, direction, kind, from_actor_id, to_actor_id, report_id, title, body, status, created_at::text
+       FROM simulation.public_interaction WHERE id = $1`,
+      [input.interactionId]
+    );
+    const r = res.rows[0];
+    if (!r) {
+      const auditEvent = await this.recordVenueAuditEvent(
+        {
+          actorAccountId: input.actorAccountId,
+          action: 'public.interaction.respond',
+          targetId: input.interactionId,
+          outcome: 'denied',
+          reasonCode: 'INTERACTION_NOT_FOUND',
+          detailSummary: {}
+        },
+        nowIso
+      );
+      return { ok: false, reasonCode: 'INTERACTION_NOT_FOUND', message: '対象の公的やり取りが見つかりません。', auditEvent };
+    }
+
+    if (r.direction === 'to-government') {
+      if (input.roleTrack !== 'government') {
+        const auditEvent = await this.recordVenueAuditEvent(
+          {
+            actorAccountId: input.actorAccountId,
+            action: 'public.petition.decide',
+            targetId: r.id,
+            outcome: 'denied',
+            reasonCode: 'FORBIDDEN_GOVERNMENT_ONLY',
+            detailSummary: { roleTrack: input.roleTrack }
+          },
+          nowIso
+        );
+        return { ok: false, reasonCode: 'FORBIDDEN_GOVERNMENT_ONLY', message: '要望・申請の審査・回答は自治体アカウントのみ実行できます。', auditEvent };
+      }
+      const allowedGovStatuses: readonly PublicInteractionStatus[] = [
+        'under-review',
+        'questioned',
+        'approved',
+        'supported',
+        'returned'
+      ];
+      if (!allowedGovStatuses.includes(input.nextStatus)) {
+        const auditEvent = await this.recordVenueAuditEvent(
+          {
+            actorAccountId: input.actorAccountId,
+            action: 'public.petition.decide',
+            targetId: r.id,
+            outcome: 'denied',
+            reasonCode: 'INVALID_STATUS_TRANSITION',
+            detailSummary: { nextStatus: input.nextStatus }
+          },
+          nowIso
+        );
+        return { ok: false, reasonCode: 'INVALID_STATUS_TRANSITION', message: '自治体回答として不正なステータスです。', auditEvent };
+      }
+    } else {
+      if (r.to_actor_id !== input.actorId) {
+        const auditEvent = await this.recordVenueAuditEvent(
+          {
+            actorAccountId: input.actorAccountId,
+            action: 'government.offer.respond',
+            targetId: r.id,
+            outcome: 'denied',
+            reasonCode: 'FORBIDDEN_RECIPIENT_ONLY',
+            detailSummary: { actorId: input.actorId, expectedToActorId: r.to_actor_id }
+          },
+          nowIso
+        );
+        return { ok: false, reasonCode: 'FORBIDDEN_RECIPIENT_ONLY', message: 'オファーへの応答は受信先アカウントのみ可能です。', auditEvent };
+      }
+      if (input.nextStatus !== 'accepted' && input.nextStatus !== 'declined') {
+        const auditEvent = await this.recordVenueAuditEvent(
+          {
+            actorAccountId: input.actorAccountId,
+            action: 'government.offer.respond',
+            targetId: r.id,
+            outcome: 'denied',
+            reasonCode: 'INVALID_STATUS_TRANSITION',
+            detailSummary: { nextStatus: input.nextStatus }
+          },
+          nowIso
+        );
+        return { ok: false, reasonCode: 'INVALID_STATUS_TRANSITION', message: 'オファー応答は accepted / declined のみ指定できます。', auditEvent };
+      }
+    }
+
+    const evId = `pubev-${Date.now().toString(36)}-${generateSessionToken().slice(0, 6)}`;
+    const notifId = `notif-${Date.now().toString(36)}-${generateSessionToken().slice(0, 6)}`;
+
+    const tx = await this.pool.connect();
+    try {
+      await tx.query('BEGIN');
+      await tx.query(
+        `UPDATE simulation.public_interaction
+         SET status = $2, latest_decision_reason = $3, decided_by_account_id = $4, decided_at = $5::timestamptz
+         WHERE id = $1`,
+        [r.id, input.nextStatus, reason, input.actorAccountId, nowIso]
+      );
+      await tx.query(
+        `INSERT INTO simulation.public_interaction_event
+           (id, interaction_id, actor_account_id, from_status, to_status, reason, recorded_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7::timestamptz)`,
+        [evId, r.id, input.actorAccountId, r.status, input.nextStatus, reason, nowIso]
+      );
+      await tx.query(
+        `INSERT INTO simulation.venue_notification
+           (id, recipient_actor_id, category, title, body, reference_id, is_read, created_at)
+         VALUES ($1,$2,'government-action',$3,$4,$5,false,$6::timestamptz)`,
+        [
+          notifId,
+          r.from_actor_id,
+          r.direction === 'to-government'
+            ? `【自治体回答 (${input.nextStatus})】${r.title}`
+            : `【オファー応答 (${input.nextStatus})】${r.title}`,
+          `理由：${reason}`,
+          r.id,
+          nowIso
+        ]
+      );
+      await tx.query('COMMIT');
+    } catch (err) {
+      await tx.query('ROLLBACK');
+      throw err;
+    } finally {
+      tx.release();
+    }
+
+    const auditEvent = await this.recordVenueAuditEvent(
+      {
+        actorAccountId: input.actorAccountId,
+        action: r.direction === 'to-government' ? 'public.petition.decide' : 'government.offer.respond',
+        targetId: r.id,
+        outcome: 'allowed',
+        reasonCode: `STATUS_${input.nextStatus.toUpperCase()}`,
+        detailSummary: { fromStatus: r.status, toStatus: input.nextStatus, reason }
+      },
+      nowIso
+    );
+
+    return {
+      ok: true,
+      interaction: {
+        id: r.id,
+        direction: r.direction,
+        kind: r.kind,
+        fromActorId: r.from_actor_id,
+        toActorId: r.to_actor_id,
+        reportId: r.report_id,
+        title: r.title,
+        body: r.body,
+        status: input.nextStatus,
+        latestDecisionReason: reason,
+        decidedByAccountId: input.actorAccountId,
+        decidedAt: nowIso,
+        createdAt: r.created_at
+      },
+      auditEvent
+    };
   }
 }

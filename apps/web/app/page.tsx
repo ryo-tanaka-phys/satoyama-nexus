@@ -38,6 +38,8 @@ export default async function Home() {
       : null,
     notifications,
     orgChatMessages,
+    publicApprovalVisibility:
+      process.env.PUBLIC_APPROVAL_VISIBILITY === 'outcome-only' ? 'outcome-only' : 'full-process',
     snapshot,
     serverTimestamp: new Date().toISOString()
   };

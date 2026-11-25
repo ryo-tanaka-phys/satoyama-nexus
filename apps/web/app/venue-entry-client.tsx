@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState, useTransition } from 'react';
 import {
   VENUE_TAGS,
   type DemoAccountRecord,
+  type PublicApprovalVisibilityMode,
   type PublicVenueProfileView,
   type VenueRoleTrack,
   type VenueTag
@@ -19,6 +20,8 @@ import { VenueSocialHub } from './components/venue-social-hub';
 import { VenueCertificationBanner } from './components/venue-certification-banner';
 import { VenueOperatorPanel } from './components/venue-operator-panel';
 import { VenueOrganizationPanel } from './components/venue-organization-panel';
+import { VenueGovernmentPanel } from './components/venue-government-panel';
+import { VenueVerticalActions } from './components/venue-vertical-actions';
 
 export interface InitialVenuePageData {
   authenticated: boolean;
@@ -32,6 +35,7 @@ export interface InitialVenuePageData {
   } | null;
   notifications: readonly VenueNotificationRecord[];
   orgChatMessages: readonly OrgChatMessageRecord[];
+  publicApprovalVisibility: PublicApprovalVisibilityMode;
   snapshot: VenueFoundationSnapshot;
   serverTimestamp: string;
 }
@@ -506,6 +510,31 @@ export function VenueEntryClient({ initialData }: { initialData: InitialVenuePag
                 publicProfile={data.publicProfile}
                 orgChatMessages={data.orgChatMessages ?? []}
                 snapshot={data.snapshot}
+                busy={busy}
+                onRefresh={refreshSession}
+                onFeedback={setFeedback}
+              />
+            )}
+
+            {/* Vertical Public Actions (Org petitions & corporate offers / Recipient government offers) */}
+            {data.account.roleTrack !== 'government' && (
+              <VenueVerticalActions
+                account={data.account}
+                publicProfile={data.publicProfile}
+                snapshot={data.snapshot}
+                visibilityMode={data.publicApprovalVisibility ?? 'full-process'}
+                busy={busy}
+                onRefresh={refreshSession}
+                onFeedback={setFeedback}
+              />
+            )}
+
+            {/* Municipality Dashboard (Petition inbox + Outgoing account offers + Transparency log) */}
+            {data.account.roleTrack === 'government' && (
+              <VenueGovernmentPanel
+                account={data.account}
+                snapshot={data.snapshot}
+                defaultVisibilityMode={data.publicApprovalVisibility ?? 'full-process'}
                 busy={busy}
                 onRefresh={refreshSession}
                 onFeedback={setFeedback}

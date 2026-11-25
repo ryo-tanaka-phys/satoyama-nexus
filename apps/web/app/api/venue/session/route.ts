@@ -22,6 +22,9 @@ export async function GET(request: Request) {
       ? await store.listOrgChatMessages(resolved.account.actorId)
       : [];
 
+  const publicApprovalVisibility =
+    process.env.PUBLIC_APPROVAL_VISIBILITY === 'outcome-only' ? 'outcome-only' : 'full-process';
+
   return NextResponse.json({
     authenticated: resolved.authenticated,
     mode: resolved.session?.mode ?? null,
@@ -36,6 +39,7 @@ export async function GET(request: Request) {
       : null,
     notifications,
     orgChatMessages,
+    publicApprovalVisibility,
     snapshot,
     serverTimestamp: new Date().toISOString()
   });

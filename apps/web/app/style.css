@@ -924,3 +924,11 @@ code {
   flex-direction: column;
   gap: 16px;
 }
+
+
+/* === P6 Municipality Dashboard === */
+.gov-panel-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
