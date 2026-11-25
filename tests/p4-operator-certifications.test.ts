@@ -1,12 +1,23 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { checkCertifiedOrganizationAccess } from '@satoyama/domain';
+import { InMemoryVenueFoundationStore } from '../db/venue-store';
 import { POST as loginPost } from '../apps/web/app/api/venue/login/route';
 import { GET as sessionGet } from '../apps/web/app/api/venue/session/route';
 import { POST as submitCertPost } from '../apps/web/app/api/venue/certifications/route';
 import { POST as reviewCertPost } from '../apps/web/app/api/venue/certifications/[requestId]/review/route';
 import { POST as mediatedMatchPost } from '../apps/web/app/api/venue/operator/mediated-match/route';
 import { POST as addCommentPost } from '../apps/web/app/api/venue/posts/[postId]/comments/route';
-import { getActiveVenueFoundationStore } from '../apps/web/lib/venue-runtime';
+import {
+  getActiveVenueFoundationStore,
+  setActiveVenueFoundationStoreForTest
+} from '../apps/web/lib/venue-runtime';
+
+beforeEach(() => {
+  setActiveVenueFoundationStoreForTest(new InMemoryVenueFoundationStore());
+});
+afterAll(() => {
+  setActiveVenueFoundationStoreForTest(null);
+});
 
 async function loginAs(accountId: string): Promise<string> {
   const res = await loginPost(

@@ -1,8 +1,17 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { InMemoryVenueFoundationStore } from '../db/venue-store';
+import { setActiveVenueFoundationStoreForTest } from '../apps/web/lib/venue-runtime';
 import { POST as registerPost } from '../apps/web/app/api/venue/register/route';
 import { POST as loginPost } from '../apps/web/app/api/venue/login/route';
 import { GET as sessionGet } from '../apps/web/app/api/venue/session/route';
 import { POST as logoutPost } from '../apps/web/app/api/venue/logout/route';
+
+beforeEach(() => {
+  setActiveVenueFoundationStoreForTest(new InMemoryVenueFoundationStore());
+});
+afterAll(() => {
+  setActiveVenueFoundationStoreForTest(null);
+});
 
 function extractCookiePair(setCookie: string | null): string {
   expect(setCookie).toBeTruthy();

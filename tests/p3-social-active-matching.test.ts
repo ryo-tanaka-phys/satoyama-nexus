@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { toStructuredVenueMatchingInput } from '@satoyama/domain';
+import { InMemoryVenueFoundationStore } from '../db/venue-store';
 import { POST as loginPost } from '../apps/web/app/api/venue/login/route';
 import { GET as sessionGet } from '../apps/web/app/api/venue/session/route';
 import { POST as createPost } from '../apps/web/app/api/venue/posts/route';
@@ -8,7 +9,17 @@ import { POST as endorsePost } from '../apps/web/app/api/venue/posts/[postId]/en
 import { POST as createConnection } from '../apps/web/app/api/venue/connections/route';
 import { POST as updateProfile } from '../apps/web/app/api/venue/profile/route';
 import { POST as readNotification } from '../apps/web/app/api/venue/notifications/read/route';
-import { getActiveVenueFoundationStore } from '../apps/web/lib/venue-runtime';
+import {
+  getActiveVenueFoundationStore,
+  setActiveVenueFoundationStoreForTest
+} from '../apps/web/lib/venue-runtime';
+
+beforeEach(() => {
+  setActiveVenueFoundationStoreForTest(new InMemoryVenueFoundationStore());
+});
+afterAll(() => {
+  setActiveVenueFoundationStoreForTest(null);
+});
 
 async function loginAs(accountId: string): Promise<string> {
   const res = await loginPost(

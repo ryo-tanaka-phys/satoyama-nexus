@@ -1,10 +1,19 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   buildGuaranteedWerewolfRoles,
   drawShuffledWerewolfRoles,
   generateWerewolfRoomCode
 } from '@satoyama/domain';
+import { InMemoryVenueFoundationStore } from '../db/venue-store';
+import { setActiveVenueFoundationStoreForTest } from '../apps/web/lib/venue-runtime';
 import { POST as loginPost } from '../apps/web/app/api/venue/login/route';
+
+beforeEach(() => {
+  setActiveVenueFoundationStoreForTest(new InMemoryVenueFoundationStore());
+});
+afterAll(() => {
+  setActiveVenueFoundationStoreForTest(null);
+});
 import { GET as venueSessionGet } from '../apps/web/app/api/venue/session/route';
 import { GET as werewolfStateGet } from '../apps/web/app/api/werewolf/state/route';
 import { POST as werewolfRoomsPost } from '../apps/web/app/api/werewolf/rooms/route';
